@@ -5,99 +5,53 @@ const NAV_ITEMS = [
   { key: 'route',     label: '경로 안내', icon: '🧭' },
   { key: 'community', label: '커뮤니티',  icon: '💬' },
   { key: 'myinfo',    label: '내 정보',   icon: '👤' },
-  { key: 'settings',  label: '설정',     icon: '⚙️' },
 ]
 
-export default function Sidebar({ filters, onFilterChange, user, onLogout, onGoLogin }) {
-  const [activeNav, setActiveNav] = useState('map')
-  const [startInput, setStartInput] = useState('')
-  const [endInput, setEndInput] = useState('')
-
+export default function Sidebar({ filters, onFilterChange, user, onLogout, onGoLogin, onNavigate, activePage, isOpen }) {
   const s = styles
   const avatarChar = user?.nickname?.charAt(0) ?? '?'
 
   return (
-    <aside style={s.sidebar}>
+    <aside style={{
+      ...s.sidebar,
+      width: isOpen ? '200px' : '0px',
+      padding: isOpen ? '16px 12px' : '0',
+      transition: 'width 0.3s ease, padding 0.3s ease',
+    }}>
 
-      {/* 로고 */}
       <div style={s.logoRow}>
         <span style={s.logoIcon}>🛡️</span>
         <span style={s.logoText}>Light Safe</span>
       </div>
 
-      {/* 유저 프로필 */}
       <div style={s.profileRow}>
-        <div style={s.avatar}>
-          {user ? avatarChar : '?'}
-        </div>
+        <div style={s.avatar}>{user ? avatarChar : '?'}</div>
         <div style={{ overflow: 'hidden' }}>
-          <div style={s.profileName}>
-            {user ? user.nickname : '비로그인'}
-          </div>
-          <div style={s.profileEmail}>
-            {user ? user.username : '로그인이 필요합니다'}
-          </div>
+          <div style={s.profileName}>{user ? user.nickname : '비로그인'}</div>
+          <div style={s.profileEmail}>{user ? user.username : '로그인이 필요합니다'}</div>
         </div>
       </div>
 
       <div style={s.divider} />
 
-      {/* 안전 경로 찾기 */}
-      <div style={s.card}>
-        <div style={s.cardTitle}>안전 경로 찾기</div>
-        <input
-          style={s.input}
-          placeholder="출발지"
-          value={startInput}
-          onChange={e => setStartInput(e.target.value)}
-        />
-        <input
-          style={{ ...s.input, marginTop: '8px' }}
-          placeholder="도착지"
-          value={endInput}
-          onChange={e => setEndInput(e.target.value)}
-        />
-        <button style={s.searchBtn}>안전 경로 찾기</button>
-      </div>
-
-      <div style={s.divider} />
-
-      {/* 지도 표시 설정 */}
       <div style={s.card}>
         <div style={s.cardTitle}>지도 표시 설정</div>
-        <ToggleRow
-          color="#00E676"
-          label="CCTV"
-          checked={filters.cctv}
-          onChange={() => onFilterChange('cctv')}
-        />
-        <ToggleRow
-          color="#FFD600"
-          label="가로등"
-          checked={filters.streetLamp}
-          onChange={() => onFilterChange('streetLamp')}
-        />
-        <ToggleRow
-          color="#00E676"
-          label="안전 구역"
-          checked={filters.safeZone}
-          onChange={() => onFilterChange('safeZone')}
-        />
+        <ToggleRow color="#00E676" label="CCTV"    checked={filters.cctv}       onChange={() => onFilterChange('cctv')} />
+        <ToggleRow color="#FFD600" label="가로등"  checked={filters.streetLamp} onChange={() => onFilterChange('streetLamp')} />
+        <ToggleRow color="#00E676" label="안전 구역" checked={filters.safeZone} onChange={() => onFilterChange('safeZone')} />
       </div>
 
-      {/* 스페이서 */}
       <div style={{ flex: 1 }} />
 
-      {/* 하단 네비게이션 */}
       <nav>
         {NAV_ITEMS.map(item => (
           <button
             key={item.key}
             style={{
               ...s.navItem,
-              ...(activeNav === item.key ? s.navItemActive : {}),
+              ...(activePage === item.key ? s.navItemActive : {}),
             }}
-            onClick={() => setActiveNav(item.key)}
+            onClick={() => onNavigate(item.key)}
           >
             <span style={s.navIcon}>{item.icon}</span>
             <span>{item.label}</span>
@@ -106,20 +60,13 @@ export default function Sidebar({ filters, onFilterChange, user, onLogout, onGoL
 
         <div style={{ ...s.divider, margin: '8px 0' }} />
 
-        {/* 로그인 상태에 따라 버튼 분기 */}
         {user ? (
-          <button
-            style={{ ...s.navItem, color: '#FF3B3B' }}
-            onClick={onLogout}
-          >
+          <button style={{ ...s.navItem, color: '#FF3B3B' }} onClick={onLogout}>
             <span style={s.navIcon}>🚪</span>
             <span>로그아웃</span>
           </button>
         ) : (
-          <button
-            style={{ ...s.navItem, color: '#00E676' }}
-            onClick={onGoLogin}
-          >
+          <button style={{ ...s.navItem, color: '#00E676' }} onClick={onGoLogin}>
             <span style={s.navIcon}>🔑</span>
             <span>로그인</span>
           </button>
@@ -133,8 +80,7 @@ function ToggleRow({ color, label, checked, onChange }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center',
-      justifyContent: 'space-between',
-      padding: '6px 0',
+      justifyContent: 'space-between', padding: '6px 0',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <span style={{
@@ -153,12 +99,10 @@ function ToggleRow({ color, label, checked, onChange }) {
         }}
       >
         <div style={{
-          position: 'absolute',
-          top: '2px',
+          position: 'absolute', top: '2px',
           left: checked ? '18px' : '2px',
           width: '16px', height: '16px', borderRadius: '50%',
-          backgroundColor: '#fff',
-          transition: 'left 0.2s',
+          backgroundColor: '#fff', transition: 'left 0.2s',
           boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
         }} />
       </div>
@@ -168,20 +112,20 @@ function ToggleRow({ color, label, checked, onChange }) {
 
 const styles = {
   sidebar: {
-    width: '200px', flexShrink: 0, height: '100vh',
+    flexShrink: 0, height: '100vh',
     backgroundColor: '#0D1117', borderRight: '1px solid #1E2535',
     display: 'flex', flexDirection: 'column',
-    padding: '16px 12px', overflowY: 'auto',
+    overflowY: 'auto', overflowX: 'hidden',
   },
   logoRow: {
-    display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px',
+    display: 'flex', alignItems: 'center', gap: '8px',
+    marginBottom: '16px', whiteSpace: 'nowrap',
   },
   logoIcon: { fontSize: '20px' },
-  logoText: {
-    color: '#fff', fontWeight: '700', fontSize: '16px', letterSpacing: '-0.3px',
-  },
+  logoText: { color: '#fff', fontWeight: '700', fontSize: '16px', letterSpacing: '-0.3px' },
   profileRow: {
-    display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px',
+    display: 'flex', alignItems: 'center', gap: '10px',
+    marginBottom: '16px', whiteSpace: 'nowrap',
   },
   avatar: {
     width: '36px', height: '36px', borderRadius: '50%',
@@ -201,22 +145,11 @@ const styles = {
   card: {
     backgroundColor: '#161B27', borderRadius: '10px',
     padding: '12px', marginBottom: '8px', border: '1px solid #1E2535',
+    whiteSpace: 'nowrap',
   },
   cardTitle: {
     color: '#fff', fontSize: '12px', fontWeight: '600',
     marginBottom: '10px', letterSpacing: '0.3px',
-  },
-  input: {
-    width: '100%', backgroundColor: '#0D1117',
-    border: '1px solid #2D3748', borderRadius: '6px',
-    padding: '8px 10px', color: '#fff', fontSize: '12px',
-    outline: 'none', boxSizing: 'border-box',
-  },
-  searchBtn: {
-    marginTop: '10px', width: '100%',
-    backgroundColor: '#00E676', border: 'none',
-    borderRadius: '6px', padding: '9px 0',
-    color: '#000', fontWeight: '700', fontSize: '13px', cursor: 'pointer',
   },
   navItem: {
     display: 'flex', alignItems: 'center', gap: '10px',
@@ -224,9 +157,8 @@ const styles = {
     backgroundColor: 'transparent', border: 'none',
     borderRadius: '8px', cursor: 'pointer',
     color: '#A0AEC0', fontSize: '13px', textAlign: 'left',
+    whiteSpace: 'nowrap',
   },
-  navItemActive: {
-    backgroundColor: '#00E676', color: '#000', fontWeight: '700',
-  },
+  navItemActive: { backgroundColor: '#00E676', color: '#000', fontWeight: '700' },
   navIcon: { fontSize: '15px' },
 }
