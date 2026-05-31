@@ -11,6 +11,9 @@ import PostWritePage from './pages/PostWritePage'
 import AdminDashboardPage from './pages/AdminDashboardPage'
 import AdminUserPage from './pages/AdminUserPage'
 import AdminReportPage from './pages/AdminReportPage'
+import AdminDangerZonePage from './pages/AdminDangerZonePage'
+import AdminNoticePage from './pages/AdminNoticePage'
+import AdminSystemLogPage from './pages/AdminSystemLogPage'
 import './App.css'
 
 function AppRoutes() {
@@ -66,6 +69,9 @@ function AppRoutes() {
       <Route path="/admin" element={<AdminDashboardPage user={user} />} />
       <Route path="/admin/users" element={<AdminUserPage user={user} />} />
       <Route path="/admin/reports" element={<AdminReportPage user={user} />} />
+      <Route path="/admin/dangerzones" element={<AdminDangerZonePage user={user} />} />
+      <Route path="/admin/notices" element={<AdminNoticePage user={user} />} />
+      <Route path="/admin/systemlog" element={<AdminSystemLogPage user={user} />} />
     </Routes>
   )
 }
