@@ -17,19 +17,15 @@ export default function LoginPage({ onLogin, onGoRegister, onClose }) {
     setLoading(true)
     setError('')
     try {
-      // 백엔드 연동 시 주석 해제
-      // const res = await fetch('/users/login', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify(form),
-      // })
-      // const json = await res.json()
-      // if (!json.success) throw new Error(json.error?.message)
-      // localStorage.setItem('accessToken', json.data.accessToken)
-      // onLogin(json.data)
+      // 임시 관리자 계정 — 백엔드 연동 후 제거
+      if (form.usernameOrEmail === 'admin' && form.password === 'admin1234') {
+        onLogin({ userId: 0, username: 'admin', nickname: '관리자', role: 'ADMIN' })
+        return
+      }
 
-      // 임시 — 백엔드 미연동
-      onLogin({ userId: 1, username: form.usernameOrEmail, nickname: '김민수' })
+      // 임시 일반 유저 — 백엔드 연동 후 제거
+      onLogin({ userId: 1, username: form.usernameOrEmail, nickname: '김민수', role: 'USER' })
+
     } catch (err) {
       setError(err.message || '로그인에 실패했습니다.')
     } finally {
