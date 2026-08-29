@@ -9,6 +9,13 @@ import { SHEET_COLLAPSED } from '../components/layout/BottomSheet'
 import { readEnvelope } from '../utils/apiResponse'
 import { saveActiveRoute } from '../utils/activeRoute'
 import { LAYER_COLOR, FACILITY_MAX_LEVEL, dotContent } from '../components/Map/layerStyle'
+import { createFacilityLoader, kakaoBoundsToBox, isTooWide } from '../utils/facilityApi'
+
+// 지도 화면과 같은 방식으로 '보이는 범위'만 받는다. 전국 CCTV 25만 건이라 전체 조회는 없다.
+const loadCctv = createFacilityLoader('/cctvs', item => ({
+  lat: item.latitude,
+  lng: item.longitude,
+}))
 
 const START_COLOR = '#2563EB'
 const DEST_COLOR = '#E11D48'
@@ -41,7 +48,7 @@ export default function RoutePage({ user, onLogout }) {
   const markersRef = useRef([])
   const polylinesRef = useRef([])
   const facilityOverlaysRef = useRef([])
-  const cctvDataRef = useRef([])
+  const cctvReqRef = useRef(0)   // 늦게 도착한 이전 조회 결과를 버리기 위한 순번
   const cctvOverlaysRef = useRef([])
   const resultSegmentRef = useRef('') // 지금 띄워둔 검색 결과가 어느 구간의 것인지
 
@@ -97,15 +104,34 @@ export default function RoutePage({ user, onLogout }) {
 
   // 지도 화면(MapView)과 같은 규칙으로 CCTV 를 그린다 — 화면 안에 있는 것만, 이 레벨까지만.
   // 예전에는 전국 CCTV 를 통째로 마커 클러스터러에 넣어서, 넓게 보면 숫자 뭉치만 잔뜩 뜨고 느렸다.
-  const renderCctvInBounds = useCallback(() => {
+  const renderCctvInBounds = useCallback(async () => {
     const map = mapInstance.current
     if (!map || !window.kakao) return
     cctvOverlaysRef.current.forEach(o => o.setMap(null))
     cctvOverlaysRef.current = []
     if (map.getLevel() > FACILITY_MAX_LEVEL) return
 
+    const box = kakaoBoundsToBox(map.getBounds())
+    if (isTooWide(box)) return
+
+    const reqId = ++cctvReqRef.current
+
+    let data
+    try {
+      data = await loadCctv(box)
+    } catch (err) {
+      console.error('CCTV 조회 실패:', err)
+      return
+    }
+
+    // 기다리는 사이 지도가 또 움직였으면 이 결과는 버린다.
+    if (reqId !== cctvReqRef.current) return
+
+    cctvOverlaysRef.current.forEach(o => o.setMap(null))
+    cctvOverlaysRef.current = []
+
     const bounds = map.getBounds()
-    cctvDataRef.current.forEach(pos => {
+    data.forEach(pos => {
       const latlng = new window.kakao.maps.LatLng(pos.lat, pos.lng)
       if (!bounds.contain(latlng)) return
       const overlay = new window.kakao.maps.CustomOverlay({
@@ -125,11 +151,7 @@ export default function RoutePage({ user, onLogout }) {
       })
       window.kakao.maps.event.addListener(mapInstance.current, 'idle', renderCctvInBounds)
       setMapReady(true)
-      fetch('/cctvs').then(readEnvelope).then(json => {
-        if (!json.success || !json.data) return
-        cctvDataRef.current = json.data.map(item => ({ lat: item.latitude, lng: item.longitude }))
-        renderCctvInBounds()
-      }).catch(err => console.error('CCTV 로드 실패:', err))
+      renderCctvInBounds()
     }
     if (window.kakao && window.kakao.maps) initMap()
     else {
@@ -241,8 +263,7 @@ export default function RoutePage({ user, onLogout }) {
   const clearMarkers = useCallback(() => { markersRef.current.forEach(m => m.setMap(null)); markersRef.current = [] }, [])
 
   // 경로 주변 안전시설 점 — 백엔드가 경로마다 cctvLocations / storeLocations /
-  // securityLightLocations 를 같이 내려준다(RouteDto). 가로등은 이 응답이 유일한 출처다 —
-  // /cctvs 같은 전용 엔드포인트가 없어서 지도 화면에서는 아직 못 그린다.
+  // securityLightLocations 를 같이 내려준다(RouteDto).
   const clearFacilities = useCallback(() => { facilityOverlaysRef.current.forEach(o => o.setMap(null)); facilityOverlaysRef.current = [] }, [])
 
   const clearPolylines = useCallback(() => {
@@ -509,12 +530,15 @@ export default function RoutePage({ user, onLogout }) {
       : list.sort((a, b) => b.id - a.id)
   }, [bookmarks, bookmarkQuery, bookmarkSort])
 
-  const scoreColor = (score) => (score >= 20 ? 'var(--safe)' : score >= 10 ? 'var(--warning)' : 'var(--danger)')
+  // 가중치가 붙으면서 같은 경로라도 값이 3배 가까이 커졌다. 색 기준도 같이 올린다.
+  const scoreColor = (score) => (score >= 60 ? 'var(--safe)' : score >= 30 ? 'var(--warning)' : 'var(--danger)')
 
-  // 백엔드 RouteService.analyzeSafetyData: safetyScore = 경로 주변 CCTV 수 + 편의점 수 + 보안등 수.
-  // 예전엔 이 값을 'CCTV n개'로만 적었는데 편의점이 섞여 있어 틀린 라벨이었다.
-  // 보안등이 합계에 들어오면서(2026-08-21) 같은 경로라도 점수가 크게 올라간다 —
-  // 내역을 셋 다 보여주지 않으면 무엇이 많아 높은 점수인지 알 수 없다.
+  // 백엔드 RouteService.calculateWeightedSafetyScore:
+  //   safetyScore = CCTV×3 + 편의점×3 + 보안등×1 + 치안시설×4
+  //
+  // 예전에는 셋을 그냥 더한 개수여서 '안전시설 n곳'이라고 적었는데, 가중치가 붙은
+  // 지금은 개수가 아니라 점수다. 시설 5곳인 경로가 15로 나오므로 '곳'이라고 하면 틀린다.
+  // 그래서 '안전 점수 n점'으로 적고, 무엇이 몇 개라 그 점수인지 내역을 같이 보여준다.
   const facilityCounts = (route) => ({
     cctv: route?.cctvLocations?.length ?? null,
     store: route?.storeLocations?.length ?? null,
@@ -705,7 +729,7 @@ export default function RoutePage({ user, onLogout }) {
                           <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bm.routeName}</div>
                           {/* 북마크 응답에는 safetyScore 합계만 있고 CCTV/편의점 내역은 없다. */}
                           <div style={{ fontSize: 11, color: busy ? 'var(--blue-primary)' : 'var(--text-muted)' }}>
-                            {busy ? '경로를 불러오는 중…' : `안전시설 ${bm.safetyScore}곳 · 눌러서 경로 보기`}
+                            {busy ? '경로를 불러오는 중…' : `안전 점수 ${bm.safetyScore}점 · 눌러서 경로 보기`}
                           </div>
                         </div>
                         <button
@@ -739,10 +763,10 @@ export default function RoutePage({ user, onLogout }) {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                         <span style={{ fontSize: 14, fontWeight: 700, flex: 1 }}>경로 {idx + 1}</span>
                         {idx === 0 && <span style={{ background: 'var(--blue-primary)', color: '#fff', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6 }}>추천</span>}
-                        <span style={{ fontSize: 13, fontWeight: 700, color: scoreColor(route.safetyScore) }}>안전시설 {route.safetyScore}곳</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: scoreColor(route.safetyScore) }}>안전 점수 {route.safetyScore}점</span>
                       </div>
                       <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden', marginBottom: 8 }}>
-                        <div style={{ height: 5, borderRadius: 3, background: scoreColor(route.safetyScore), width: `${Math.min(route.safetyScore * 2, 100)}%`, transition: 'width .4s' }} />
+                        <div style={{ height: 5, borderRadius: 3, background: scoreColor(route.safetyScore), width: `${Math.min(route.safetyScore, 100)}%`, transition: 'width .4s' }} />
                       </div>
                       {/* 점수의 내역을 같이 보여준다 — 합계만 보면 무엇이 많아서 높은지 알 수 없다.
                           셋이 한 줄에 안 들어가면 접는다(flexWrap) — 보안등 수는 네 자리까지 가고
@@ -827,7 +851,7 @@ export default function RoutePage({ user, onLogout }) {
           {selectedRoute && (
             <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: isMobile ? 12 : 16, minWidth: isMobile ? 0 : 170, maxWidth: isMobile ? '58%' : 'none', boxShadow: 'var(--shadow)', display: isMobile && panelOpen ? 'none' : 'block' }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>선택 경로 안전도</div>
-              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 2, color: scoreColor(selectedRoute.safetyScore) }}>안전시설 {selectedRoute.safetyScore}곳</div>
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 2, color: scoreColor(selectedRoute.safetyScore) }}>안전 점수 {selectedRoute.safetyScore}점</div>
               {facilityDetail(selectedRoute) && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{facilityDetail(selectedRoute)}</div>
               )}

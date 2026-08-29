@@ -3,51 +3,22 @@ import useIsMobile from '../../hooks/useIsMobile'
 import Icon from '../Icon'
 import { iconSvg } from '../iconSvg'
 import { LAYER_COLOR, FACILITY_MAX_LEVEL, LAMP_MAX_LEVEL, STORE_NAME_MAX_LEVEL, dotContent } from './layerStyle'
-import { readEnvelope } from '../../utils/apiResponse'
+import { createFacilityLoader, kakaoBoundsToBox, isTooWide } from '../../utils/facilityApi'
 
-async function fetchCctvData() {
-  try {
-    const res = await fetch('/cctvs')
-    const json = await readEnvelope(res)
-    if (!json.success || !json.data) {
-      console.warn('CCTV 조회 실패:', json.message)
-      return []
-    }
-    return json.data.map(item => ({
-      lat: item.latitude,
-      lng: item.longitude,
-      name: item.cctvName,
-    }))
-  } catch (err) {
-    console.error('CCTV 조회 실패:', err)
-    return []
-  }
-}
+// CCTV·가로등은 '지금 보이는 범위'만 받는다. 백엔드가 서울 CSV 대신 전국 공공데이터를
+// 쓰게 되면서 각각 25만·184만 건이 되어 전체 조회 자체가 없어졌다(범위를 안 보내면 400).
+// 캐시·중복요청 처리는 facilityApi 안에 있다.
+const loadCctv = createFacilityLoader('/cctvs', item => ({
+  lat: item.latitude,
+  lng: item.longitude,
+  name: item.cctvName,
+}))
 
-// 가로등(보안등) — /cctvs 와 같은 자리의 엔드포인트다. 다만 백엔드가 주는 건 LocationDto 라
-// 이름·용도 없이 좌표뿐이다(SecurityLightService 는 CSV 에서 위경도만 추린다).
-//
-// 실패와 '엔드포인트 없음'을 빈 배열로 뭉뚱그리지 않고 null 로 돌려준다. 둘을 같게 다루면
-// 아직 안 만들어진 기능이 '이 지역에는 가로등이 없습니다' 로 보인다 — 서울 한복판에서
-// 그 문구가 뜨면 데이터가 없는 줄 알게 된다. null 이면 칩을 잠근 채로 둔다.
-async function fetchSecurityLightData() {
-  try {
-    const res = await fetch('/security-lights')
-    if (!res.ok) {
-      console.warn('가로등 조회 실패: HTTP', res.status)
-      return null
-    }
-    const json = await readEnvelope(res)
-    if (!json.success || !json.data) {
-      console.warn('가로등 조회 실패:', json.message)
-      return null
-    }
-    return json.data.map(item => ({ lat: item.latitude, lng: item.longitude }))
-  } catch (err) {
-    console.error('가로등 조회 실패:', err)
-    return null
-  }
-}
+// 가로등은 좌표만 온다(LocationDto).
+const loadLamps = createFacilityLoader('/security-lights', item => ({
+  lat: item.latitude,
+  lng: item.longitude,
+}))
 
 // 편의점(안전거점) — 백엔드에는 편의점 단독 엔드포인트가 없다.
 // KakaoLocalService.getConvenienceStores 는 POST /routes 안에서 '경로 50m 반경'으로만 쓰여
@@ -112,20 +83,20 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
   const CHIP_H = isMobile ? 26 : 34
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
-  const cctvDataRef = useRef([])
   const cctvOverlaysRef = useRef([])
-  const lampDataRef = useRef([])
+  const cctvReqRef = useRef(0)           // 늦게 도착한 이전 조회 결과를 버리기 위한 순번
   const lampOverlaysRef = useRef([])
+  const lampReqRef = useRef(0)
   const storeOverlaysRef = useRef([])
-  const storeReqRef = useRef(0)          // 늦게 도착한 이전 검색 결과를 버리기 위한 순번
+  const storeReqRef = useRef(0)
   const [cctvNotice, setCctvNotice] = useState('')
   const [lampNotice, setLampNotice] = useState('')
   const [storeNotice, setStoreNotice] = useState('')
-  // 가로등 목록을 실제로 받아왔는지. 못 받으면 칩을 잠근 채로 둔다 —
-  // 켤 수 없는 칩을 켜지게 해두면 눌러도 아무 일이 없어 고장으로 보인다.
-  // 지도 'idle' 리스너 안에서도 읽어야 해서 ref 를 같이 둔다(filters 와 같은 이유).
-  const [lampReady, setLampReady] = useState(false)
-  const lampReadyRef = useRef(false)
+  // 예전에는 '가로등 목록을 받아왔는지'(lampReady)로 칩을 잠갔다. 전용 엔드포인트가
+  // 아직 없던 시절, 눌러도 아무 일이 없는 칩을 감추기 위한 장치였다.
+  // 지금은 엔드포인트가 있고 화면을 옮길 때마다 조회하므로, 한 번 실패했다고 칩을 잠그면
+  // 다시 시도할 방법까지 막힌다. 대신 실패는 실패라고 문구로 알린다 —
+  // '이 지역에는 가로등이 없습니다' 로 뭉뚱그리지 않는 것이 원래 목적이었다.
   const locationMarkerRef = useRef(null)
   const dangerZoneOverlaysRef = useRef([])
   const routePolylinesRef = useRef([])
@@ -155,7 +126,9 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
 
   // 뷰포트 내 CCTV 점 렌더링. 필터가 꺼져 있으면 지우기만 한다 —
   // 켬/끔 판단을 한곳에 모아둬야 호출부마다 조건을 빠뜨리지 않는다.
-  const renderCctvInBounds = useCallback(() => {
+  //
+  // 조회가 비동기라 늦게 끝난 옛 요청이 새 화면을 덮어쓰지 않도록 순번을 확인한다.
+  const renderCctvInBounds = useCallback(async () => {
     const map = mapInstance.current
     if (!map || !window.kakao) return
 
@@ -167,8 +140,30 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
     }
 
     const bounds = map.getBounds()
-    const inBounds = cctvDataRef.current.filter(pos =>
-      bounds.contain(new window.kakao.maps.LatLng(pos.lat, pos.lng))
+    const box = kakaoBoundsToBox(bounds)
+    if (isTooWide(box)) {
+      setCctvNotice('지도를 확대하면 주변 CCTV가 표시됩니다')
+      return
+    }
+
+    const reqId = ++cctvReqRef.current
+
+    let data
+    try {
+      data = await loadCctv(box)
+    } catch (err) {
+      console.error('CCTV 조회 실패:', err)
+      if (reqId === cctvReqRef.current) setCctvNotice('CCTV 정보를 불러오지 못했습니다')
+      return
+    }
+
+    // 기다리는 사이 지도가 또 움직였거나 칩이 꺼졌으면 이 결과는 버린다.
+    if (reqId !== cctvReqRef.current) return
+    if (!filtersRef.current?.cctv) return
+
+    clearCctv()
+    const inBounds = data.filter(pos =>
+      map.getBounds().contain(new window.kakao.maps.LatLng(pos.lat, pos.lng))
     )
 
     inBounds.forEach(pos => {
@@ -190,15 +185,11 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
 
   // 뷰포트 내 가로등 점. CCTV 와 같은 처리인데 상한 레벨만 LAMP_MAX_LEVEL 로 다르다
   // (개수가 3배라 같은 레벨에서 그리면 지도가 멎는다 — layerStyle.js 의 실측 표 참고).
-  const renderLampsInBounds = useCallback(() => {
+  const renderLampsInBounds = useCallback(async () => {
     const map = mapInstance.current
     if (!map || !window.kakao) return
 
     clearLamps()
-    // 목록을 못 받았으면 문구도 띄우지 않는다. 필터 기본값이 켬이라 이걸 빼면
-    // 데이터가 없는데도 '지도를 확대하면…' → '이 지역에는 가로등이 없습니다' 로 이어져
-    // 서울 한복판에서 가로등이 없는 동네처럼 보인다. 아직 못 받아온 것과 진짜 없는 것은 다르다.
-    if (!lampReadyRef.current) { setLampNotice(''); return }
     if (!filtersRef.current?.streetLamp) { setLampNotice(''); return }
     if (map.getLevel() > LAMP_MAX_LEVEL) {
       setLampNotice('지도를 확대하면 주변 가로등이 표시됩니다')
@@ -206,8 +197,31 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
     }
 
     const bounds = map.getBounds()
-    const inBounds = lampDataRef.current.filter(pos =>
-      bounds.contain(new window.kakao.maps.LatLng(pos.lat, pos.lng))
+    const box = kakaoBoundsToBox(bounds)
+    if (isTooWide(box)) {
+      setLampNotice('지도를 확대하면 주변 가로등이 표시됩니다')
+      return
+    }
+
+    const reqId = ++lampReqRef.current
+
+    let data
+    try {
+      data = await loadLamps(box)
+    } catch (err) {
+      // 못 받아온 것과 진짜 없는 것은 다르다. 실패했는데 '이 지역에는 가로등이 없습니다'
+      // 라고 하면 데이터가 없는 동네로 오해한다. 실패는 실패라고 적고 칩을 잠근다.
+      console.error('가로등 조회 실패:', err)
+      if (reqId === lampReqRef.current) setLampNotice('가로등 정보를 불러오지 못했습니다')
+      return
+    }
+
+    if (reqId !== lampReqRef.current) return
+    if (!filtersRef.current?.streetLamp) return
+
+    clearLamps()
+    const inBounds = data.filter(pos =>
+      map.getBounds().contain(new window.kakao.maps.LatLng(pos.lat, pos.lng))
     )
 
     inBounds.forEach(pos => {
@@ -412,22 +426,8 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
       }
       mapInstance.current = new window.kakao.maps.Map(container, options)
 
-      // 편의점은 아래 mapReady effect 가 곧바로 한 번 그린다 — 여기서 또 부르면 카카오 검색이 두 번 나간다.
-      fetchCctvData().then(data => {
-        cctvDataRef.current = data
-        renderCctvInBounds()
-      })
-
-      // 가로등은 못 받아올 수 있다(엔드포인트가 아직 없으면 404). 그때는 칩을 잠근 채로 두고
-      // 아무것도 그리지 않는다 — lampReady 가 false 로 남는다.
-      fetchSecurityLightData().then(data => {
-        if (!data) return
-        lampDataRef.current = data
-        lampReadyRef.current = true
-        setLampReady(true)
-        renderLampsInBounds()
-      })
-
+      // CCTV·가로등·편의점 모두 아래 mapReady effect 가 곧바로 한 번 그린다.
+      // 여기서 또 부르면 같은 범위를 두 번 조회한다.
       window.kakao.maps.event.addListener(mapInstance.current, 'idle', () => {
         renderCctvInBounds()
         renderLampsInBounds()
@@ -583,8 +583,9 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
           }}
         >
           <Icon name="compass" size={isMobile ? 13 : 15} />
-          {/* safetyScore 는 CCTV + 편의점 + 보안등 합계다(RouteService.analyzeSafetyData). */}
-          <span>경로 안내 중 · 안전시설 {routeState.safetyScore}곳 경유</span>
+          {/* safetyScore 는 개수가 아니라 가중 점수다 — CCTV×3 + 편의점×3 + 보안등×1 + 치안시설×4
+              (RouteService.calculateWeightedSafetyScore). '곳'이라고 적으면 시설 수로 오해한다. */}
+          <span>경로 안내 중 · 안전 점수 {routeState.safetyScore}점</span>
           <span style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: isMobile ? 17 : 19, height: isMobile ? 17 : 19, borderRadius: '50%',
@@ -599,29 +600,24 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
       <div style={{ position: 'absolute', top: 16, left: isMobile ? 12 : 16, zIndex: 10, display: 'flex', gap: isMobile ? 6 : 8 }}>
         {[
           { key: 'cctv', icon: 'cctv', label: 'CCTV' },
-          // 가로등은 GET /security-lights 를 받아온 뒤에만 열린다. 그 응답이 없으면
-          // (엔드포인트가 아직 없거나 실패) 켤 것이 없으므로 잠근 채로 둔다.
-          { key: 'streetLamp', icon: 'street-lamp', label: '가로등', pending: !lampReady },
+          { key: 'streetLamp', icon: 'street-lamp', label: '가로등' },
           // safeZone = 편의점(안전거점).
           { key: 'safeZone', icon: 'store', label: '편의점' },
         ].map(ly => {
-          const on = !ly.pending && !!filters?.[ly.key]
+          const on = !!filters?.[ly.key]
           return (
             <button
               key={ly.key}
-              onClick={() => { if (!ly.pending) onToggleFilter?.(ly.key) }}
-              disabled={ly.pending}
-              title={ly.pending ? '가로등 데이터를 불러오지 못했습니다' : undefined}
+              onClick={() => onToggleFilter?.(ly.key)}
               style={{
                 display: 'flex', alignItems: 'center', gap: isMobile ? 4 : 6,
                 height: CHIP_H, padding: isMobile ? '0 9px' : '0 13px',
                 borderRadius: 20, fontSize: isMobile ? 11 : 12.5, fontWeight: 600,
-                cursor: ly.pending ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
                 boxShadow: 'var(--shadow)', whiteSpace: 'nowrap',
                 border: `1px solid ${on ? 'transparent' : 'var(--border)'}`,
                 background: on ? 'var(--blue-primary)' : 'var(--surface)',
                 color: on ? '#fff' : 'var(--text-muted)', fontFamily: 'inherit',
-                opacity: ly.pending ? 0.5 : 1,
               }}
             >
               <Icon name={ly.icon} size={isMobile ? 13 : 15} /><span>{ly.label}</span>
