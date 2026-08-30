@@ -8,11 +8,18 @@ import useSheetHeadHeight from '../hooks/useSheetHeadHeight'
 import { SHEET_COLLAPSED } from '../components/layout/BottomSheet'
 import { readEnvelope } from '../utils/apiResponse'
 import { saveActiveRoute } from '../utils/activeRoute'
-import { LAYER_COLOR, FACILITY_MAX_LEVEL, dotContent } from '../components/Map/layerStyle'
+import { LAYER_COLOR, FACILITY_MAX_LEVEL, lampMaxLevel, dotContent } from '../components/Map/layerStyle'
 import { createFacilityLoader, kakaoBoundsToBox, isTooWide } from '../utils/facilityApi'
+import { collectStores } from '../components/Map/storeSearch'
 
 // 지도 화면과 같은 방식으로 '보이는 범위'만 받는다. 전국 CCTV 25만 건이라 전체 조회는 없다.
 const loadCctv = createFacilityLoader('/cctvs', item => ({
+  lat: item.latitude,
+  lng: item.longitude,
+}))
+
+// 가로등은 좌표만 온다(LocationDto).
+const loadLamps = createFacilityLoader('/security-lights', item => ({
   lat: item.latitude,
   lng: item.longitude,
 }))
@@ -23,8 +30,10 @@ const DEST_COLOR = '#E11D48'
 // 구간 식별자 — 이름이 아니라 좌표로 만든다(같은 자리라도 이름은 나중에 주소로 바뀐다).
 const coordKey = (p) => (p ? `${p.lat},${p.lng}` : '')
 const segmentKey = (start, dest) => `${coordKey(start)}|${coordKey(dest)}`
-// 배경 CCTV 점은 경로 위 안전시설 점(9px)보다 크면 시선을 뺏는다 — 한 단계 작게 둔다.
+// 배경 시설 점은 경로 위 안전시설 점(9px)보다 크면 시선을 뺏는다 — 한 단계 작게 둔다.
 const cctvDot = dotContent(LAYER_COLOR.cctv, 9)
+const lampDot = dotContent(LAYER_COLOR.streetLamp, 9)
+const storeDot = dotContent(LAYER_COLOR.store, 9)
 
 // '2026-08-06T08:35:12' → '08-06 08:35'
 const fmtSearchedAt = (iso) => (iso ? String(iso).slice(5, 16).replace('T', ' ') : '')
@@ -50,6 +59,10 @@ export default function RoutePage({ user, onLogout }) {
   const facilityOverlaysRef = useRef([])
   const cctvReqRef = useRef(0)   // 늦게 도착한 이전 조회 결과를 버리기 위한 순번
   const cctvOverlaysRef = useRef([])
+  const lampReqRef = useRef(0)
+  const lampOverlaysRef = useRef([])
+  const storeReqRef = useRef(0)
+  const storeOverlaysRef = useRef([])
   const resultSegmentRef = useRef('') // 지금 띄워둔 검색 결과가 어느 구간의 것인지
 
   // 모바일에서는 바텀시트가 지도 아래쪽을 덮는다. 그냥 setCenter 하면 출발/도착 마커가 시트 뒤로 숨으므로,
@@ -102,45 +115,97 @@ export default function RoutePage({ user, onLogout }) {
   const token = localStorage.getItem('accessToken')
   const authHeader = token ? { Authorization: `Bearer ${token}` } : {}
 
-  // 지도 화면(MapView)과 같은 규칙으로 CCTV 를 그린다 — 화면 안에 있는 것만, 이 레벨까지만.
-  // 예전에는 전국 CCTV 를 통째로 마커 클러스터러에 넣어서, 넓게 보면 숫자 뭉치만 잔뜩 뜨고 느렸다.
-  const renderCctvInBounds = useCallback(async () => {
+  // 지도 화면(MapView)과 같은 규칙으로 배경 시설을 깐다 — 화면 안에 있는 것만,
+  // 레이어마다 정해진 상한 레벨까지만. 예전에는 전국 CCTV 를 통째로 마커 클러스터러에 넣어서,
+  // 넓게 보면 숫자 뭉치만 잔뜩 뜨고 느렸다.
+  //
+  // CCTV·가로등은 판정도 순번 처리도 똑같아서 한 함수로 묶었다.
+  const renderDots = useCallback(async ({ overlaysRef, reqRef, load, maxLevel, dot, zIndex, label }) => {
     const map = mapInstance.current
     if (!map || !window.kakao) return
-    cctvOverlaysRef.current.forEach(o => o.setMap(null))
-    cctvOverlaysRef.current = []
-    if (map.getLevel() > FACILITY_MAX_LEVEL) return
+
+    const clear = () => {
+      overlaysRef.current.forEach(o => o.setMap(null))
+      overlaysRef.current = []
+    }
+
+    clear()
+    if (map.getLevel() > maxLevel) return
 
     const box = kakaoBoundsToBox(map.getBounds())
     if (isTooWide(box)) return
 
-    const reqId = ++cctvReqRef.current
+    const reqId = ++reqRef.current
 
     let data
     try {
-      data = await loadCctv(box)
+      data = await load(box)
     } catch (err) {
-      console.error('CCTV 조회 실패:', err)
+      console.error(`${label} 조회 실패:`, err)
       return
     }
 
     // 기다리는 사이 지도가 또 움직였으면 이 결과는 버린다.
-    if (reqId !== cctvReqRef.current) return
+    if (reqId !== reqRef.current) return
 
-    cctvOverlaysRef.current.forEach(o => o.setMap(null))
-    cctvOverlaysRef.current = []
-
+    clear()
     const bounds = map.getBounds()
     data.forEach(pos => {
       const latlng = new window.kakao.maps.LatLng(pos.lat, pos.lng)
       if (!bounds.contain(latlng)) return
       const overlay = new window.kakao.maps.CustomOverlay({
-        position: latlng, content: cctvDot, yAnchor: 0.5, xAnchor: 0.5, zIndex: 1,
+        position: latlng, content: dot, yAnchor: 0.5, xAnchor: 0.5, zIndex,
       })
       overlay.setMap(map)
-      cctvOverlaysRef.current.push(overlay)
+      overlaysRef.current.push(overlay)
     })
   }, [])
+
+  const renderCctvInBounds = useCallback(() => renderDots({
+    overlaysRef: cctvOverlaysRef, reqRef: cctvReqRef, load: loadCctv,
+    maxLevel: FACILITY_MAX_LEVEL, dot: cctvDot, zIndex: 2, label: 'CCTV',
+  }), [renderDots])
+
+  // 가로등만 한 단계 더 확대해야 그린다. 전국 184만 개로 CCTV(25만)의 7배라
+  // 같은 레벨에서 그리면 지도가 멎는다(layerStyle.js 의 실측 표 참고).
+  // 데스크탑은 화면이 넓어 같은 레벨에도 3배쯤 더 깔리므로 거기서만 한 단계 더 조인다.
+  // 제일 많으니 맨 아래(zIndex 1)에 깐다 — 위에 얹으면 몇 안 되는 CCTV 점을 노란 점들이 덮는다.
+  const renderLampsInBounds = useCallback(() => renderDots({
+    overlaysRef: lampOverlaysRef, reqRef: lampReqRef, load: loadLamps,
+    maxLevel: lampMaxLevel(isMobile), dot: lampDot, zIndex: 1, label: '가로등',
+  }), [renderDots, isMobile])
+
+  // 편의점만 출처가 다르다. 백엔드에 영역 조회가 없어 카카오 로컬을 직접 부른다(storeSearch.js).
+  const renderStoresInBounds = useCallback(() => {
+    const map = mapInstance.current
+    if (!map || !window.kakao?.maps?.services) return
+
+    // 이 시점 이후 도착하는 이전 요청의 콜백은 무시된다
+    const reqId = ++storeReqRef.current
+    storeOverlaysRef.current.forEach(o => o.setMap(null))
+    storeOverlaysRef.current = []
+    if (map.getLevel() > FACILITY_MAX_LEVEL) return
+
+    collectStores(map.getBounds()).then(({ places, failed }) => {
+      if (reqId !== storeReqRef.current) return
+      if (failed) { console.error('편의점 조회 실패'); return }
+
+      places.forEach(place => {
+        const overlay = new window.kakao.maps.CustomOverlay({
+          position: new window.kakao.maps.LatLng(Number(place.y), Number(place.x)),
+          content: storeDot, yAnchor: 0.5, xAnchor: 0.5, zIndex: 3,
+        })
+        overlay.setMap(map)
+        storeOverlaysRef.current.push(overlay)
+      })
+    })
+  }, [])
+
+  const renderFacilitiesInBounds = useCallback(() => {
+    renderCctvInBounds()
+    renderLampsInBounds()
+    renderStoresInBounds()
+  }, [renderCctvInBounds, renderLampsInBounds, renderStoresInBounds])
 
   useEffect(() => {
     const initMap = () => {
@@ -149,16 +214,16 @@ export default function RoutePage({ user, onLogout }) {
       mapInstance.current = new window.kakao.maps.Map(container, {
         center: new window.kakao.maps.LatLng(37.4979, 127.0276), level: FACILITY_MAX_LEVEL,
       })
-      window.kakao.maps.event.addListener(mapInstance.current, 'idle', renderCctvInBounds)
+      window.kakao.maps.event.addListener(mapInstance.current, 'idle', renderFacilitiesInBounds)
       setMapReady(true)
-      renderCctvInBounds()
+      renderFacilitiesInBounds()
     }
     if (window.kakao && window.kakao.maps) initMap()
     else {
       const check = setInterval(() => { if (window.kakao && window.kakao.maps) { clearInterval(check); initMap() } }, 300)
       return () => clearInterval(check)
     }
-  }, [renderCctvInBounds])
+  }, [renderFacilitiesInBounds])
 
   // 좌표 → 도로명(없으면 지번) 주소. 카카오 services 로 처리하므로 백엔드가 필요 없다.
   const reverseGeocode = useCallback((lat, lng) => new Promise((resolve) => {
@@ -196,19 +261,19 @@ export default function RoutePage({ user, onLogout }) {
   }, [startMode, centerOnVisible, reverseGeocode])
 
   // 좌측 패널 접힘/펼침 등으로 지도 컨테이너 크기가 바뀌면 카카오 지도 relayout (안 하면 타일이 잘림).
-  // 넓어진 만큼 화면에 새로 들어온 CCTV 도 같이 그린다 — relayout 만으로는 점이 이전 영역 기준으로 남는다.
+  // 넓어진 만큼 화면에 새로 들어온 시설도 같이 그린다 — relayout 만으로는 점이 이전 영역 기준으로 남는다.
   useEffect(() => {
     if (!mapRef.current || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       if (!mapInstance.current) return
       requestAnimationFrame(() => {
         mapInstance.current.relayout()
-        renderCctvInBounds()
+        renderFacilitiesInBounds()
       })
     })
     ro.observe(mapRef.current)
     return () => ro.disconnect()
-  }, [renderCctvInBounds])
+  }, [renderFacilitiesInBounds])
 
   // 선언을 effect보다 앞에 둔다 — effect에서 아직 선언 전인 const 를 참조하면 안 된다.
   // authHeader 는 렌더마다 새 객체라 의존성으로 쓸 수 없어, 토큰에서 헤더를 직접 만든다.
@@ -280,8 +345,10 @@ export default function RoutePage({ user, onLogout }) {
       ;(Array.isArray(list) ? list : []).forEach(p => {
         if (p?.latitude == null || p?.longitude == null) return
         const o = new window.kakao.maps.CustomOverlay({
+          // 배경 시설 점(가로등 1 · CCTV 2 · 편의점 3)보다 위에 온다. 이 점들은 '이 경로에
+          // 붙은' 시설이라 배경에 묻히면 경로를 왜 안전하다고 했는지 읽을 수가 없다.
           position: new window.kakao.maps.LatLng(p.latitude, p.longitude),
-          content: dot(color), yAnchor: 0.5, xAnchor: 0.5, zIndex: 2,
+          content: dot(color), yAnchor: 0.5, xAnchor: 0.5, zIndex: 5,
         })
         o.setMap(mapInstance.current)
         facilityOverlaysRef.current.push(o)
@@ -297,7 +364,8 @@ export default function RoutePage({ user, onLogout }) {
   const addMarker = useCallback((latlng, label, color) => {
     if (!mapInstance.current) return
     const content = `<div style="background:${color};border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.25);">${label}</div>`
-    const overlay = new window.kakao.maps.CustomOverlay({ position: latlng, content, yAnchor: 1 })
+    // 출발·도착은 무엇에도 가리면 안 된다 — 배경 시설(1~3)과 경로 위 시설(5) 위에 둔다.
+    const overlay = new window.kakao.maps.CustomOverlay({ position: latlng, content, yAnchor: 1, zIndex: 6 })
     overlay.setMap(mapInstance.current)
     markersRef.current.push(overlay)
   }, [])
@@ -533,6 +601,20 @@ export default function RoutePage({ user, onLogout }) {
   // 가중치가 붙으면서 같은 경로라도 값이 3배 가까이 커졌다. 색 기준도 같이 올린다.
   const scoreColor = (score) => (score >= 60 ? 'var(--safe)' : score >= 30 ? 'var(--warning)' : 'var(--danger)')
 
+  // 바 길이는 절대 점수가 아니라 **1순위 경로 대비**로 그린다.
+  //
+  // safetyScore 는 시설 개수의 가중합이라(CCTV×3 + 편의점×3 + 보안등×1 + 치안시설×4)
+  // 100 이 만점이 아니다 — 도심 경로는 수백 점, 외곽은 한 자리도 나온다. 100 을 기준으로 그리면
+  // 도심에서는 세 경로가 다 꽉 차고 외곽에서는 다 비어서, 어느 쪽이든 경로 사이의 차이가 안 보인다.
+  // 1순위를 100% 로 두면 '2순위가 1순위의 몇 할인지'가 바로 읽힌다.
+  //
+  // routes 는 안전 점수 내림차순이라 routes[0] 이 곧 1순위다.
+  const barRatio = (score) => {
+    const top = routes[0]?.safetyScore ?? 0
+    if (!(top > 0)) return 0   // 전부 0점이면 채울 것이 없다(0 으로 나누는 것도 막는다)
+    return Math.max(0, Math.min(100, (score / top) * 100))
+  }
+
   // 백엔드 RouteService.calculateWeightedSafetyScore:
   //   safetyScore = CCTV×3 + 편의점×3 + 보안등×1 + 치안시설×4
   //
@@ -590,8 +672,15 @@ export default function RoutePage({ user, onLogout }) {
             }}
           >
           <div style={{ padding: isMobile ? '0 16px 16px' : 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {/* data-sheet-head: 모바일 바텀시트가 이 높이를 재서 mid(조금 올린 상태) 높이로 쓴다. */}
-            <div data-sheet-head style={{ paddingTop: isMobile ? 2 : 0, paddingBottom: isMobile ? 10 : 0 }}>
+            {/* data-sheet-head: 모바일 바텀시트가 이 높이를 재서 mid(조금 올린 상태) 높이로 쓴다.
+                sticky 는 시트를 다 올려 본문을 스크롤한 뒤 다시 내렸을 때를 위한 것이다. 이게 없으면
+                스크롤된 만큼 제목이 밀려 나가서, 조금만 올린 상태에 제목 대신 본문 중간이 보인다.
+                안전 현황 시트(RightPanel)도 같은 이유로 제목에 sticky 를 준다. */}
+            <div data-sheet-head style={{
+              paddingTop: isMobile ? 2 : 0, paddingBottom: isMobile ? 10 : 0,
+              // 데스크탑은 스크롤 칸 위쪽에 18 패딩이 있어 top:0 에 붙이면 제목이 그만큼 위로 뛴다.
+              ...(isMobile ? { position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 2 } : {}),
+            }}>
               <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-.3px' }}>안전 경로 안내</div>
               <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 2 }}>CCTV·가로등·편의점 밀집도로 안전한 길을 찾습니다</div>
             </div>
@@ -766,7 +855,7 @@ export default function RoutePage({ user, onLogout }) {
                         <span style={{ fontSize: 13, fontWeight: 700, color: scoreColor(route.safetyScore) }}>안전 점수 {route.safetyScore}점</span>
                       </div>
                       <div style={{ width: '100%', height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden', marginBottom: 8 }}>
-                        <div style={{ height: 5, borderRadius: 3, background: scoreColor(route.safetyScore), width: `${Math.min(route.safetyScore, 100)}%`, transition: 'width .4s' }} />
+                        <div style={{ height: 5, borderRadius: 3, background: scoreColor(route.safetyScore), width: `${barRatio(route.safetyScore)}%`, transition: 'width .4s' }} />
                       </div>
                       {/* 점수의 내역을 같이 보여준다 — 합계만 보면 무엇이 많아서 높은지 알 수 없다.
                           셋이 한 줄에 안 들어가면 접는다(flexWrap) — 보안등 수는 네 자리까지 가고

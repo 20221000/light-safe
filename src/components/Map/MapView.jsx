@@ -2,8 +2,9 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import useIsMobile from '../../hooks/useIsMobile'
 import Icon from '../Icon'
 import { iconSvg } from '../iconSvg'
-import { LAYER_COLOR, FACILITY_MAX_LEVEL, LAMP_MAX_LEVEL, STORE_NAME_MAX_LEVEL, dotContent } from './layerStyle'
+import { LAYER_COLOR, FACILITY_MAX_LEVEL, lampMaxLevel, MY_LOCATION_Z, ROUTE_ENDPOINT_Z, SEARCH_PIN_Z, dotContent } from './layerStyle'
 import { createFacilityLoader, kakaoBoundsToBox, isTooWide } from '../../utils/facilityApi'
+import { collectStores } from './storeSearch'
 
 // CCTV·가로등은 '지금 보이는 범위'만 받는다. 백엔드가 서울 CSV 대신 전국 공공데이터를
 // 쓰게 되면서 각각 25만·184만 건이 되어 전체 조회 자체가 없어졌다(범위를 안 보내면 400).
@@ -19,63 +20,6 @@ const loadLamps = createFacilityLoader('/security-lights', item => ({
   lat: item.latitude,
   lng: item.longitude,
 }))
-
-// 편의점(안전거점) — 백엔드에는 편의점 단독 엔드포인트가 없다.
-// KakaoLocalService.getConvenienceStores 는 POST /routes 안에서 '경로 50m 반경'으로만 쓰여
-// '지금 보이는 지도 영역' 질문에는 답할 수 없다. 그래서 백엔드가 쓰는 것과 같은 소스
-// (카카오 로컬, category_group_code=CS2)를 지도 SDK 의 services 라이브러리로 직접 조회한다.
-const STORE_CATEGORY = 'CS2'
-// 카카오 카테고리 검색은 한 번의 요청에서 15곳 × 3페이지 = 45곳까지만 준다(우리가 정한 한도가 아니다).
-// 45곳이 꽉 찼다는 건 실제로는 더 있다는 뜻이므로, 그 영역만 4등분해 다시 검색한다.
-// 꽉 차지 않은 영역은 더 쪼개지 않으므로 한산한 동네에서는 요청 수가 그대로다.
-const STORE_PAGE_CAP = 45
-const STORE_SPLIT_DEPTH = 2   // 4²= 최대 16조각. 여기까지 쪼개도 넘치면 그 사실을 문구로 알린다.
-
-// 영역을 4분면으로 나눈다.
-const splitBounds = (bounds) => {
-  const { LatLng, LatLngBounds } = window.kakao.maps
-  const sw = bounds.getSouthWest(), ne = bounds.getNorthEast()
-  const midLat = (sw.getLat() + ne.getLat()) / 2
-  const midLng = (sw.getLng() + ne.getLng()) / 2
-  return [
-    new LatLngBounds(sw, new LatLng(midLat, midLng)),
-    new LatLngBounds(new LatLng(sw.getLat(), midLng), new LatLng(midLat, ne.getLng())),
-    new LatLngBounds(new LatLng(midLat, sw.getLng()), new LatLng(ne.getLat(), midLng)),
-    new LatLngBounds(new LatLng(midLat, midLng), ne),
-  ]
-}
-
-// 한 영역을 끝까지(최대 3페이지) 훑는다.
-const searchArea = (bounds) => new Promise(resolve => {
-  const found = []
-  const handle = (data, status, pagination) => {
-    const { Status } = window.kakao.maps.services
-    if (status === Status.ERROR) { resolve({ places: found, capped: false, failed: true }); return }
-    if (status === Status.OK) {
-      found.push(...data)
-      if (pagination?.hasNextPage) { pagination.nextPage(); return }
-    }
-    resolve({ places: found, capped: found.length >= STORE_PAGE_CAP, failed: false })
-  }
-  new window.kakao.maps.services.Places().categorySearch(STORE_CATEGORY, handle, { bounds })
-})
-
-// 45곳에서 잘린 영역만 4등분해 재귀로 파고든다. 마지막에 id 로 중복을 걷어낸다 —
-// 이웃한 조각은 경계를 공유하므로 경계 위의 편의점이 양쪽 결과에 다 들어온다.
-const collectStores = async (bounds, depth = 0) => {
-  const area = await searchArea(bounds)
-  if (area.failed) return { places: [], capped: false, failed: true }
-  if (!area.capped || depth >= STORE_SPLIT_DEPTH) return { ...area, failed: false }
-
-  const parts = await Promise.all(splitBounds(bounds).map(b => collectStores(b, depth + 1)))
-  const byId = new Map()
-  parts.forEach(p => p.places.forEach(place => byId.set(place.id, place)))
-  return {
-    places: [...byId.values()],
-    capped: parts.some(p => p.capped),
-    failed: parts.every(p => p.failed),
-  }
-}
 
 export default function MapView({ filters, onToggleFilter, dangerZones = [], routeState = null, onCancelRoute, searchTarget = null }) {
   // 모바일에서는 레이어 칩을 데스크탑의 3/4 크기로 줄인다(34 → 26px).
@@ -183,15 +127,16 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
     lampOverlaysRef.current = []
   }, [])
 
-  // 뷰포트 내 가로등 점. CCTV 와 같은 처리인데 상한 레벨만 LAMP_MAX_LEVEL 로 다르다
-  // (개수가 3배라 같은 레벨에서 그리면 지도가 멎는다 — layerStyle.js 의 실측 표 참고).
+  // 뷰포트 내 가로등 점. CCTV 와 같은 처리인데 상한 레벨만 다르다 — 개수가 7배라
+  // 같은 레벨에서 그리면 지도가 멎는다(layerStyle.js 의 실측 표 참고).
+  // 데스크탑은 같은 레벨에서도 화면이 넓어 3배쯤 더 깔리므로 한 단계 더 조인다.
   const renderLampsInBounds = useCallback(async () => {
     const map = mapInstance.current
     if (!map || !window.kakao) return
 
     clearLamps()
     if (!filtersRef.current?.streetLamp) { setLampNotice(''); return }
-    if (map.getLevel() > LAMP_MAX_LEVEL) {
+    if (map.getLevel() > lampMaxLevel(isMobile)) {
       setLampNotice('지도를 확대하면 주변 가로등이 표시됩니다')
       return
     }
@@ -236,7 +181,7 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
     })
 
     setLampNotice(inBounds.length === 0 ? '이 지역에는 가로등이 없습니다' : `가로등 ${inBounds.length}개`)
-  }, [clearLamps])
+  }, [clearLamps, isMobile])
 
   const clearStores = useCallback(() => {
     storeOverlaysRef.current.forEach(o => o.setMap(null))
@@ -258,23 +203,17 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
       return
     }
 
-    const showName = map.getLevel() <= STORE_NAME_MAX_LEVEL   // 좁게 볼 때만 상호를 띄운다(넓으면 라벨끼리 겹친다)
-
+    // 예전에는 많이 확대하면 상호가 붙은 알약을 띄웠다. 알약 하나가 100px 가까이 돼서
+    // 지도의 상호·도로명을 덮었고, 편의점이 몰린 곳에서는 알약끼리 겹쳐 오히려 못 읽었다.
+    // CCTV·가로등과 같은 점으로 통일한다 — 상호는 지도가 이미 제 글씨로 보여준다.
     collectStores(map.getBounds()).then(({ places, capped, failed }) => {
       if (reqId !== storeReqRef.current) return
       if (failed) { setStoreNotice('편의점 정보를 불러오지 못했습니다'); return }
 
       places.forEach(place => {
-        const content = showName
-          ? `<div style="display:flex;align-items:center;gap:4px;background:${LAYER_COLOR.store};color:#fff;
-                padding:3px 8px;border-radius:12px;font-size:11px;font-weight:700;white-space:nowrap;
-                border:1.5px solid #fff;box-shadow:0 2px 6px rgba(15,23,42,.28);">
-               ${iconSvg('store', { size: 11, color: '#fff' })}${place.place_name}
-             </div>`
-          : dotContent(LAYER_COLOR.store)
         const overlay = new window.kakao.maps.CustomOverlay({
           position: new window.kakao.maps.LatLng(Number(place.y), Number(place.x)),
-          content, yAnchor: 0.5, xAnchor: 0.5, zIndex: 3,
+          content: dotContent(LAYER_COLOR.store), yAnchor: 0.5, xAnchor: 0.5, zIndex: 3,
         })
         overlay.setMap(map)
         storeOverlaysRef.current.push(overlay)
@@ -378,7 +317,7 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
             border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);
           ">출발</div>
         `,
-        yAnchor: 1,
+        yAnchor: 1, zIndex: ROUTE_ENDPOINT_Z,
       })
       startOverlay.setMap(mapInstance.current)
       routeMarkersRef.current.push(startOverlay)
@@ -396,7 +335,7 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
             border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);
           ">도착</div>
         `,
-        yAnchor: 1,
+        yAnchor: 1, zIndex: ROUTE_ENDPOINT_Z,
       })
       destOverlay.setMap(mapInstance.current)
       routeMarkersRef.current.push(destOverlay)
@@ -475,7 +414,8 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
             </div>
           `
           const locationOverlay = new window.kakao.maps.CustomOverlay({
-            position: latlng, content, yAnchor: 0.5, xAnchor: 0.5,
+            // zIndex 를 안 주면 0 이라 시설 점(가로등 1 · CCTV 2 · 편의점 3) 아래로 묻힌다.
+            position: latlng, content, yAnchor: 0.5, xAnchor: 0.5, zIndex: MY_LOCATION_Z,
           })
           locationOverlay.setMap(mapInstance.current)
           locationMarkerRef.current = locationOverlay
@@ -555,7 +495,7 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
         <div style="width:2px;height:9px;background:#2563EB;"></div>
       </div>
     `
-    const overlay = new window.kakao.maps.CustomOverlay({ position: latlng, content, yAnchor: 1 })
+    const overlay = new window.kakao.maps.CustomOverlay({ position: latlng, content, yAnchor: 1, zIndex: SEARCH_PIN_Z })
     overlay.setMap(mapInstance.current)
     searchMarkerRef.current = overlay
   }, [mapReady, searchTarget])
