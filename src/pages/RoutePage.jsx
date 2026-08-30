@@ -6,10 +6,11 @@ import Icon from '../components/Icon'
 import useDragSheet from '../hooks/useDragSheet'
 import useSheetHeadHeight from '../hooks/useSheetHeadHeight'
 import { SHEET_COLLAPSED } from '../components/layout/BottomSheet'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 import { saveActiveRoute } from '../utils/activeRoute'
 import { LAYER_COLOR, FACILITY_MAX_LEVEL, lampMaxLevel, dotContent } from '../components/Map/layerStyle'
-import { createFacilityLoader, kakaoBoundsToBox, isTooWide } from '../utils/facilityApi'
+import { createFacilityLoader } from '../utils/facilityApi'
+import { renderFacilityDots } from '../components/Map/facilityLayer'
 import { collectStores } from '../components/Map/storeSearch'
 
 // 지도 화면과 같은 방식으로 '보이는 범위'만 받는다. 전국 CCTV 25만 건이라 전체 조회는 없다.
@@ -112,68 +113,32 @@ export default function RoutePage({ user, onLogout }) {
   const [recentLabels, setRecentLabels] = useState({}) // routeHistoryId → 도착지 주소 (역지오코딩 결과)
   const [panelOpen, setPanelOpen] = useState(true) // 좌측 경로 안내 패널 열기/닫기
 
+  // 로그인 여부 판단에만 쓴다 — 요청 헤더는 apiFetch 가 붙인다.
   const token = localStorage.getItem('accessToken')
-  const authHeader = token ? { Authorization: `Bearer ${token}` } : {}
 
   // 지도 화면(MapView)과 같은 규칙으로 배경 시설을 깐다 — 화면 안에 있는 것만,
   // 레이어마다 정해진 상한 레벨까지만. 예전에는 전국 CCTV 를 통째로 마커 클러스터러에 넣어서,
   // 넓게 보면 숫자 뭉치만 잔뜩 뜨고 느렸다.
   //
-  // CCTV·가로등은 판정도 순번 처리도 똑같아서 한 함수로 묶었다.
-  const renderDots = useCallback(async ({ overlaysRef, reqRef, load, maxLevel, dot, zIndex, label }) => {
-    const map = mapInstance.current
-    if (!map || !window.kakao) return
-
-    const clear = () => {
-      overlaysRef.current.forEach(o => o.setMap(null))
-      overlaysRef.current = []
-    }
-
-    clear()
-    if (map.getLevel() > maxLevel) return
-
-    const box = kakaoBoundsToBox(map.getBounds())
-    if (isTooWide(box)) return
-
-    const reqId = ++reqRef.current
-
-    let data
-    try {
-      data = await load(box)
-    } catch (err) {
-      console.error(`${label} 조회 실패:`, err)
-      return
-    }
-
-    // 기다리는 사이 지도가 또 움직였으면 이 결과는 버린다.
-    if (reqId !== reqRef.current) return
-
-    clear()
-    const bounds = map.getBounds()
-    data.forEach(pos => {
-      const latlng = new window.kakao.maps.LatLng(pos.lat, pos.lng)
-      if (!bounds.contain(latlng)) return
-      const overlay = new window.kakao.maps.CustomOverlay({
-        position: latlng, content: dot, yAnchor: 0.5, xAnchor: 0.5, zIndex,
-      })
-      overlay.setMap(map)
-      overlaysRef.current.push(overlay)
-    })
-  }, [])
-
-  const renderCctvInBounds = useCallback(() => renderDots({
-    overlaysRef: cctvOverlaysRef, reqRef: cctvReqRef, load: loadCctv,
-    maxLevel: FACILITY_MAX_LEVEL, dot: cctvDot, zIndex: 2, label: 'CCTV',
-  }), [renderDots])
+  // 조회·순번·범위 판정은 지도 화면과 똑같아서 facilityLayer.js 하나를 같이 쓴다.
+  // 이 화면은 레이어 칩이 없으므로 안내문구(setNotice)를 넘기지 않는다.
+  const renderCctvInBounds = useCallback(() => renderFacilityDots({
+    map: mapInstance.current,
+    overlaysRef: cctvOverlaysRef, seqRef: cctvReqRef,
+    load: loadCctv, maxLevel: FACILITY_MAX_LEVEL,
+    dot: cctvDot, zIndex: 2, label: 'CCTV',
+  }), [])
 
   // 가로등만 한 단계 더 확대해야 그린다. 전국 184만 개로 CCTV(25만)의 7배라
   // 같은 레벨에서 그리면 지도가 멎는다(layerStyle.js 의 실측 표 참고).
   // 데스크탑은 화면이 넓어 같은 레벨에도 3배쯤 더 깔리므로 거기서만 한 단계 더 조인다.
   // 제일 많으니 맨 아래(zIndex 1)에 깐다 — 위에 얹으면 몇 안 되는 CCTV 점을 노란 점들이 덮는다.
-  const renderLampsInBounds = useCallback(() => renderDots({
-    overlaysRef: lampOverlaysRef, reqRef: lampReqRef, load: loadLamps,
-    maxLevel: lampMaxLevel(isMobile), dot: lampDot, zIndex: 1, label: '가로등',
-  }), [renderDots, isMobile])
+  const renderLampsInBounds = useCallback(() => renderFacilityDots({
+    map: mapInstance.current,
+    overlaysRef: lampOverlaysRef, seqRef: lampReqRef,
+    load: loadLamps, maxLevel: lampMaxLevel(isMobile),
+    dot: lampDot, zIndex: 1, label: '가로등',
+  }), [isMobile])
 
   // 편의점만 출처가 다르다. 백엔드에 영역 조회가 없어 카카오 로컬을 직접 부른다(storeSearch.js).
   const renderStoresInBounds = useCallback(() => {
@@ -276,14 +241,16 @@ export default function RoutePage({ user, onLogout }) {
   }, [renderFacilitiesInBounds])
 
   // 선언을 effect보다 앞에 둔다 — effect에서 아직 선언 전인 const 를 참조하면 안 된다.
-  // authHeader 는 렌더마다 새 객체라 의존성으로 쓸 수 없어, 토큰에서 헤더를 직접 만든다.
+  // token 을 의존성으로 두는 건 '로그인이 바뀌면 다시 받는다'는 뜻이다(헤더 때문이 아니다).
   const fetchBookmarks = useCallback(async () => {
     try {
-      const res = await fetch('/bookmarks', { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      const json = await readEnvelope(res)
+      const json = await apiFetch('/bookmarks')
       if (json.success) setBookmarks(json.data ?? [])
       else console.warn('북마크 조회 실패:', json.message)
     } catch (err) { console.error('북마크 조회 실패:', err) }
+    // token 은 본문에서 안 쓰지만 의존성으로 남긴다 — 로그인/로그아웃 때 다시 받기 위한 것이다.
+    // (헤더는 apiFetch 가 붙이므로 본문에서 token 을 읽을 일이 없어졌다.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
   useEffect(() => { fetchBookmarks() }, [fetchBookmarks])
@@ -292,8 +259,7 @@ export default function RoutePage({ user, onLogout }) {
   const fetchRecentRoutes = useCallback(async () => {
     if (!token) { setRecentRoutes([]); return }
     try {
-      const res = await fetch('/recent-routes', { headers: { Authorization: `Bearer ${token}` } })
-      const json = await readEnvelope(res)
+      const json = await apiFetch('/recent-routes')
       if (json.success) setRecentRoutes(json.data ?? [])
       else console.warn('최근 경로 조회 실패:', json.message)
     } catch (err) { console.error('최근 경로 조회 실패:', err) }
@@ -463,11 +429,10 @@ export default function RoutePage({ user, onLogout }) {
   // /routes 호출 한 곳. 경로 검색과 북마크가 같은 응답 형태를 쓰므로 공유한다.
   // 백엔드는 안전 점수 상위 경로들을 한 번에(최대 3개) 돌려준다 — 개수는 백엔드가 정한다.
   const requestRoutes = async (start, dest) => {
-    const res = await fetch('/routes', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeader },
-      body: JSON.stringify({ startLatitude: start.lat, startLongitude: start.lng, endLatitude: dest.lat, endLongitude: dest.lng }),
+    const json = await apiFetch('/routes', {
+      method: 'POST',
+      body: { startLatitude: start.lat, startLongitude: start.lng, endLatitude: dest.lat, endLongitude: dest.lng },
     })
-    const json = await readEnvelope(res)
     const found = json.success ? (json.data ?? []) : []
     // 실패 사유를 그대로 넘긴다 ('경로 없음'과 '권한 없음'은 다르다).
     if (found.length === 0) return { routes: [], message: json.message }
@@ -515,11 +480,10 @@ export default function RoutePage({ user, onLogout }) {
   const handleBookmarkSave = async () => {
     if (!selectedRoute || !selectedStart || !selectedDest) return
     try {
-      const res = await fetch('/bookmarks', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeader },
-        body: JSON.stringify({ routeName: `${selectedStart.name} → ${selectedDest.name}`, startLatitude: selectedStart.lat, startLongitude: selectedStart.lng, endLatitude: selectedDest.lat, endLongitude: selectedDest.lng, safetyScore: selectedRoute.safetyScore }),
+      const json = await apiFetch('/bookmarks', {
+        method: 'POST',
+        body: { routeName: `${selectedStart.name} → ${selectedDest.name}`, startLatitude: selectedStart.lat, startLongitude: selectedStart.lng, endLatitude: selectedDest.lat, endLongitude: selectedDest.lng, safetyScore: selectedRoute.safetyScore },
       })
-      const json = await readEnvelope(res)
       if (json.success) { alert('북마크에 저장되었습니다.'); fetchBookmarks() }
       else alert(json.message || '저장에 실패했습니다.')
     } catch { alert('저장에 실패했습니다.') }
@@ -527,13 +491,13 @@ export default function RoutePage({ user, onLogout }) {
 
   const handleBookmarkDelete = async (id) => {
     if (!window.confirm('북마크를 삭제할까요?')) return
-    try { await fetch(`/bookmarks/${id}`, { method: 'DELETE', headers: authHeader }); fetchBookmarks() }
+    try { await apiFetch(`/bookmarks/${id}`, { method: 'DELETE' }); fetchBookmarks() }
     catch { alert('삭제에 실패했습니다.') }
   }
 
   const handleRecentDelete = async (routeHistoryId) => {
     try {
-      await fetch(`/recent-routes/${routeHistoryId}`, { method: 'DELETE', headers: authHeader })
+      await apiFetch(`/recent-routes/${routeHistoryId}`, { method: 'DELETE' })
       fetchRecentRoutes()
     } catch { alert('삭제에 실패했습니다.') }
   }
@@ -541,7 +505,7 @@ export default function RoutePage({ user, onLogout }) {
   const handleRecentClear = async () => {
     if (!window.confirm('최근 경로를 모두 지울까요?')) return
     try {
-      await fetch('/recent-routes/all', { method: 'DELETE', headers: authHeader })
+      await apiFetch('/recent-routes/all', { method: 'DELETE' })
       fetchRecentRoutes()
     } catch { alert('삭제에 실패했습니다.') }
   }

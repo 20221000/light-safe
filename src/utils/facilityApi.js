@@ -5,7 +5,7 @@
 // CCTV 25만·보안등 184만 건이 되었고, 전건 응답은 각각 5.7MB / 80MB 라 그 방식은 못 쓴다.
 // 이제 백엔드가 범위를 안 주면 400 을 돌려주므로 항상 범위를 함께 보낸다.
 
-import { readEnvelope } from './apiResponse'
+import { apiFetch } from './api'
 
 // 백엔드 MapBounds.MAX_SPAN_DEGREE 와 같은 값. 이보다 넓게 요청하면 400 이다.
 export const MAX_SPAN_DEGREE = 0.5
@@ -94,10 +94,7 @@ export function createFacilityLoader(path, mapItem) {
     const target = padBox(box)
     const mySeq = ++seq
 
-    const res = await fetch(`${path}?${toQuery(target)}`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-
-    const json = await readEnvelope(res)
+    const json = await apiFetch(`${path}?${toQuery(target)}`)
     if (!json.success || !json.data) {
       throw new Error(json.message || '조회에 실패했습니다')
     }

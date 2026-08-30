@@ -4,7 +4,7 @@ import UserShell from '../components/layout/UserShell'
 import useIsMobile from '../hooks/useIsMobile'
 import useAuthNav from '../hooks/useAuthNav'
 import Icon from '../components/Icon'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 
 // NOTICE(공지)는 관리자 전용이라 제외. REPORT는 커뮤니티 '안전 신고' 글(원클릭 긴급신고와 무관).
 const CATEGORIES = ['INFO', 'QUESTION', 'REPORT', 'TIP']
@@ -38,10 +38,7 @@ export default function PostWritePage({ user, onLogout }) {
     if (!isEdit || !user) return
     let alive = true
     ;(async () => {
-      const token = localStorage.getItem('accessToken')
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
-      const res = await fetch(`/posts/${postId}`, { headers })
-      const json = await readEnvelope(res)
+      const json = await apiFetch(`/posts/${postId}`)
       if (!alive) return
       if (!json.success || !json.data) { alert(json.message || '게시글을 불러오지 못했습니다.'); navigate('/community'); return }
       const p = json.data
@@ -66,17 +63,14 @@ export default function PostWritePage({ user, onLogout }) {
     if (!title.trim()) { alert('제목을 입력해주세요.'); return }
     if (!content.trim()) { alert('내용을 입력해주세요.'); return }
     setLoading(true)
-    const token = localStorage.getItem('accessToken')
     try {
       // 수정 모드: PUT /posts/{postId} — 제목·내용·카테고리만. 첨부는 상세 화면에서 개별 관리.
       if (isEdit) {
         // category 를 고르지 않았으면 아예 보내지 않는다. 백엔드는 null 이면 기존 값을 그대로 둔다.
-        const res = await fetch(`/posts/${postId}`, {
+        const json = await apiFetch(`/posts/${postId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(category ? { title, content, category } : { title, content }),
+          body: category ? { title, content, category } : { title, content },
         })
-        const json = await readEnvelope(res)
         if (!json.success) { alert(json.message || '게시글 수정에 실패했습니다.'); return }
         navigate(`/community/${postId}`)
         return
@@ -88,16 +82,10 @@ export default function PostWritePage({ user, onLogout }) {
         formData.append('category', category)
         // 작성자는 백엔드가 JWT에서 읽는다. userId 를 보내도 쓰이지 않는다.
         files.forEach(file => formData.append('files', file))
-        const res = await fetch('/posts/with-files', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
-        const json = await readEnvelope(res)
+        const json = await apiFetch('/posts/with-files', { method: 'POST', body: formData })
         if (!json.success) { alert(json.message || '게시글 등록에 실패했습니다.'); return }
       } else {
-        const res = await fetch('/posts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ title, content, category }),
-        })
-        const json = await readEnvelope(res)
+        const json = await apiFetch('/posts', { method: 'POST', body: { title, content, category } })
         if (!json.success) { alert(json.message || '게시글 등록에 실패했습니다.'); return }
       }
       navigate('/community')

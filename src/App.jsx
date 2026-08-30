@@ -18,6 +18,7 @@ import AdminDangerZonePage from './pages/AdminDangerZonePage'
 import AdminNoticePage from './pages/AdminNoticePage'
 import useIsMobile from './hooks/useIsMobile'
 import { apiSend } from './utils/adminApi'
+import { apiFetch } from './utils/api'
 import './App.css'
 
 function AppRoutes() {
@@ -64,12 +65,12 @@ function AppRoutes() {
   // 앱 진입 시 저장된 토큰이 아직 유효한지 한 번 확인한다.
   // 401/403(명시적 인증 거부)일 때만 조용히 로그아웃 — 서버 다운/네트워크 오류로는 로그아웃하지 않는다.
   useEffect(() => {
-    const token = localStorage.getItem('accessToken')
-    if (!token || !user) return
+    if (!localStorage.getItem('accessToken') || !user) return
     ;(async () => {
       try {
-        const res = await fetch('/users/auth-check', { headers: { Authorization: `Bearer ${token}` } })
-        if (res.status === 401 || res.status === 403) clearSession()
+        // 봉투의 status 가 곧 HTTP 상태코드다(readEnvelope 가 실어 준다).
+        const { status } = await apiFetch('/users/auth-check')
+        if (status === 401 || status === 403) clearSession()
       } catch {
         /* 네트워크 오류: 토큰 무효 판단 불가 → 세션 유지 */
       }

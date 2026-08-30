@@ -3,7 +3,8 @@ import useIsMobile from '../../hooks/useIsMobile'
 import Icon from '../Icon'
 import { iconSvg } from '../iconSvg'
 import { LAYER_COLOR, FACILITY_MAX_LEVEL, lampMaxLevel, MY_LOCATION_Z, ROUTE_ENDPOINT_Z, SEARCH_PIN_Z, dotContent } from './layerStyle'
-import { createFacilityLoader, kakaoBoundsToBox, isTooWide } from '../../utils/facilityApi'
+import { createFacilityLoader } from '../../utils/facilityApi'
+import { renderFacilityDots } from './facilityLayer'
 import { collectStores } from './storeSearch'
 
 // CCTV·가로등은 '지금 보이는 범위'만 받는다. 백엔드가 서울 CSV 대신 전국 공공데이터를
@@ -63,125 +64,40 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
   const filtersRef = useRef(filters)
   filtersRef.current = filters
 
-  const clearCctv = useCallback(() => {
-    cctvOverlaysRef.current.forEach(o => o.setMap(null))
-    cctvOverlaysRef.current = []
-  }, [])
+  // 뷰포트 내 CCTV 점. 필터가 꺼져 있으면 지우기만 한다 —
+  // 켬/끔 판단을 renderFacilityDots 안에 모아둬야 호출부마다 조건을 빠뜨리지 않는다.
+  const renderCctvInBounds = useCallback(() => renderFacilityDots({
+    map: mapInstance.current,
+    overlaysRef: cctvOverlaysRef, seqRef: cctvReqRef,
+    load: loadCctv, maxLevel: FACILITY_MAX_LEVEL,
+    dot: dotContent(LAYER_COLOR.cctv), zIndex: 2,
+    enabled: filtersRef.current?.cctv,
+    setNotice: setCctvNotice, label: 'CCTV',
+    notice: {
+      zoomOut: '지도를 확대하면 주변 CCTV가 표시됩니다',
+      fail: 'CCTV 정보를 불러오지 못했습니다',
+      empty: '이 지역에는 CCTV가 없습니다',
+      count: n => `CCTV ${n}대`,
+    },
+  }), [])
 
-  // 뷰포트 내 CCTV 점 렌더링. 필터가 꺼져 있으면 지우기만 한다 —
-  // 켬/끔 판단을 한곳에 모아둬야 호출부마다 조건을 빠뜨리지 않는다.
-  //
-  // 조회가 비동기라 늦게 끝난 옛 요청이 새 화면을 덮어쓰지 않도록 순번을 확인한다.
-  const renderCctvInBounds = useCallback(async () => {
-    const map = mapInstance.current
-    if (!map || !window.kakao) return
-
-    clearCctv()
-    if (!filtersRef.current?.cctv) { setCctvNotice(''); return }
-    if (map.getLevel() > FACILITY_MAX_LEVEL) {
-      setCctvNotice('지도를 확대하면 주변 CCTV가 표시됩니다')
-      return
-    }
-
-    const bounds = map.getBounds()
-    const box = kakaoBoundsToBox(bounds)
-    if (isTooWide(box)) {
-      setCctvNotice('지도를 확대하면 주변 CCTV가 표시됩니다')
-      return
-    }
-
-    const reqId = ++cctvReqRef.current
-
-    let data
-    try {
-      data = await loadCctv(box)
-    } catch (err) {
-      console.error('CCTV 조회 실패:', err)
-      if (reqId === cctvReqRef.current) setCctvNotice('CCTV 정보를 불러오지 못했습니다')
-      return
-    }
-
-    // 기다리는 사이 지도가 또 움직였거나 칩이 꺼졌으면 이 결과는 버린다.
-    if (reqId !== cctvReqRef.current) return
-    if (!filtersRef.current?.cctv) return
-
-    clearCctv()
-    const inBounds = data.filter(pos =>
-      map.getBounds().contain(new window.kakao.maps.LatLng(pos.lat, pos.lng))
-    )
-
-    inBounds.forEach(pos => {
-      const overlay = new window.kakao.maps.CustomOverlay({
-        position: new window.kakao.maps.LatLng(pos.lat, pos.lng),
-        content: dotContent(LAYER_COLOR.cctv), yAnchor: 0.5, xAnchor: 0.5, zIndex: 2,
-      })
-      overlay.setMap(map)
-      cctvOverlaysRef.current.push(overlay)
-    })
-
-    setCctvNotice(inBounds.length === 0 ? '이 지역에는 CCTV가 없습니다' : `CCTV ${inBounds.length}대`)
-  }, [clearCctv])
-
-  const clearLamps = useCallback(() => {
-    lampOverlaysRef.current.forEach(o => o.setMap(null))
-    lampOverlaysRef.current = []
-  }, [])
-
-  // 뷰포트 내 가로등 점. CCTV 와 같은 처리인데 상한 레벨만 다르다 — 개수가 7배라
-  // 같은 레벨에서 그리면 지도가 멎는다(layerStyle.js 의 실측 표 참고).
-  // 데스크탑은 같은 레벨에서도 화면이 넓어 3배쯤 더 깔리므로 한 단계 더 조인다.
-  const renderLampsInBounds = useCallback(async () => {
-    const map = mapInstance.current
-    if (!map || !window.kakao) return
-
-    clearLamps()
-    if (!filtersRef.current?.streetLamp) { setLampNotice(''); return }
-    if (map.getLevel() > lampMaxLevel(isMobile)) {
-      setLampNotice('지도를 확대하면 주변 가로등이 표시됩니다')
-      return
-    }
-
-    const bounds = map.getBounds()
-    const box = kakaoBoundsToBox(bounds)
-    if (isTooWide(box)) {
-      setLampNotice('지도를 확대하면 주변 가로등이 표시됩니다')
-      return
-    }
-
-    const reqId = ++lampReqRef.current
-
-    let data
-    try {
-      data = await loadLamps(box)
-    } catch (err) {
-      // 못 받아온 것과 진짜 없는 것은 다르다. 실패했는데 '이 지역에는 가로등이 없습니다'
-      // 라고 하면 데이터가 없는 동네로 오해한다. 실패는 실패라고 적고 칩을 잠근다.
-      console.error('가로등 조회 실패:', err)
-      if (reqId === lampReqRef.current) setLampNotice('가로등 정보를 불러오지 못했습니다')
-      return
-    }
-
-    if (reqId !== lampReqRef.current) return
-    if (!filtersRef.current?.streetLamp) return
-
-    clearLamps()
-    const inBounds = data.filter(pos =>
-      map.getBounds().contain(new window.kakao.maps.LatLng(pos.lat, pos.lng))
-    )
-
-    inBounds.forEach(pos => {
-      const overlay = new window.kakao.maps.CustomOverlay({
-        position: new window.kakao.maps.LatLng(pos.lat, pos.lng),
-        // CCTV(zIndex 2)·편의점(3)보다 아래에 깐다. 가로등이 제일 많아서 위에 얹으면
-        // 몇 안 되는 CCTV 점을 노란 점들이 덮는다 — 경로 화면에서 그리는 순서와 같은 이유다.
-        content: dotContent(LAYER_COLOR.streetLamp), yAnchor: 0.5, xAnchor: 0.5, zIndex: 1,
-      })
-      overlay.setMap(map)
-      lampOverlaysRef.current.push(overlay)
-    })
-
-    setLampNotice(inBounds.length === 0 ? '이 지역에는 가로등이 없습니다' : `가로등 ${inBounds.length}개`)
-  }, [clearLamps, isMobile])
+  // 가로등은 CCTV 와 같은 처리인데 상한 레벨만 다르다 — 개수가 7배라 같은 레벨에서 그리면
+  // 지도가 멎는다(layerStyle.js 의 실측 표). 데스크탑은 화면이 넓어 3배쯤 더 깔리므로 한 단계 더 조인다.
+  // zIndex 1 = CCTV(2)·편의점(3)보다 아래. 제일 많아서 위에 얹으면 몇 안 되는 CCTV 점을 덮는다.
+  const renderLampsInBounds = useCallback(() => renderFacilityDots({
+    map: mapInstance.current,
+    overlaysRef: lampOverlaysRef, seqRef: lampReqRef,
+    load: loadLamps, maxLevel: lampMaxLevel(isMobile),
+    dot: dotContent(LAYER_COLOR.streetLamp), zIndex: 1,
+    enabled: filtersRef.current?.streetLamp,
+    setNotice: setLampNotice, label: '가로등',
+    notice: {
+      zoomOut: '지도를 확대하면 주변 가로등이 표시됩니다',
+      fail: '가로등 정보를 불러오지 못했습니다',
+      empty: '이 지역에는 가로등이 없습니다',
+      count: n => `가로등 ${n}개`,
+    },
+  }), [isMobile])
 
   const clearStores = useCallback(() => {
     storeOverlaysRef.current.forEach(o => o.setMap(null))
@@ -197,7 +113,7 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
     const reqId = ++storeReqRef.current
     clearStores()
 
-    if (!filtersRef.current?.safeZone) { setStoreNotice(''); return }
+    if (!filtersRef.current?.store) { setStoreNotice(''); return }
     if (map.getLevel() > FACILITY_MAX_LEVEL) {
       setStoreNotice('지도를 확대하면 주변 편의점이 표시됩니다')
       return
@@ -541,8 +457,7 @@ export default function MapView({ filters, onToggleFilter, dangerZones = [], rou
         {[
           { key: 'cctv', icon: 'cctv', label: 'CCTV' },
           { key: 'streetLamp', icon: 'street-lamp', label: '가로등' },
-          // safeZone = 편의점(안전거점).
-          { key: 'safeZone', icon: 'store', label: '편의점' },
+          { key: 'store', icon: 'store', label: '편의점' },
         ].map(ly => {
           const on = !!filters?.[ly.key]
           return (

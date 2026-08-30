@@ -10,7 +10,7 @@
 // 담을 수 없다. 그래서 쪽지는 쪽지 API 로 따로 센다 — 임시방편이 아니라 두 엔드포인트 다
 // 정식 API 이고 숫자도 서버가 센 값 그대로다. 한 테이블로 합치는 건 백엔드 요청 10번.
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 
 // 알림·쪽지를 읽음 처리한 화면이 이 이벤트를 쏘면 셸의 뱃지가 다시 센다.
 export const NOTIFICATIONS_CHANGED = 'ls-notifications-changed'
@@ -29,13 +29,13 @@ export default function useUnreadNotifications(user) {
   const refreshRef = useRef(null)
 
   const refresh = useCallback(async () => {
-    const token = localStorage.getItem('accessToken')
-    if (!user || !token) { setCounts({ emergency: 0, message: 0 }); return }
-    const headers = { Authorization: `Bearer ${token}` }
+    if (!user || !localStorage.getItem('accessToken')) {
+      setCounts({ emergency: 0, message: 0 })
+      return
+    }
 
     const readCount = async (url) => {
-      const res = await fetch(url, { headers })
-      const json = await readEnvelope(res)
+      const json = await apiFetch(url)
       return json.success ? Number(json.data?.unreadCount ?? 0) : null
     }
 

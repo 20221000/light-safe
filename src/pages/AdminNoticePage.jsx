@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import AdminShell from '../components/layout/AdminShell'
 import { adminStyles as s } from '../components/Admin/adminStyles'
 import { apiGet, apiSend } from '../utils/adminApi'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 import useIsMobile from '../hooks/useIsMobile'
 import Icon from '../components/Icon'
 
@@ -58,13 +58,12 @@ export default function AdminNoticePage({ user, onLogout }) {
       if (files.length > 0) {
         // 공지 전용 첨부 엔드포인트. 일반글 /posts/with-files 로 우회하면 isNotice=false 로 저장돼
         // 상단 고정 공지 배너에 뜨지 않는다. 작성자는 백엔드가 JWT에서 읽는다.
-        const token = localStorage.getItem('accessToken')
         const formData = new FormData()
         formData.append('title', title.trim())
         formData.append('content', content.trim())
         files.forEach(file => formData.append('files', file))
-        const res = await fetch('/posts/admin/notices/with-files', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: formData })
-        const json = await readEnvelope(res)
+        // FormData 는 apiFetch 가 Content-Type 을 건드리지 않고 그대로 보낸다.
+        const json = await apiFetch('/posts/admin/notices/with-files', { method: 'POST', body: formData })
         if (!json.success) throw new Error(json.message || '공지 등록에 실패했습니다.')
       } else {
         await apiSend('/posts/admin/notices', 'POST', {

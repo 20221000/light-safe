@@ -5,7 +5,7 @@ import useIsMobile from '../hooks/useIsMobile'
 import useAuthNav from '../hooks/useAuthNav'
 import Icon from '../components/Icon'
 import { POST_CATEGORY } from '../theme/tokens'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch, authHeaders } from '../utils/api'
 
 // 모르는 값이면 배지를 아예 그리지 않는다. 예전엔 INFO 로 떨어뜨렸는데,
 // GET /posts/{id}(PostDetailResponse)에 category 필드가 없어서 실제로는 모든 글이 '정보'로 찍혔다
@@ -150,10 +150,7 @@ export default function PostDetailPage({ user, onLogout }) {
   const fetchPost = useCallback(async () => {
     try {
       setLoading(true)
-      const token = localStorage.getItem('accessToken')
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
-      const res = await fetch(`/posts/${postId}`, { headers })
-      const json = await readEnvelope(res)
+      const json = await apiFetch(`/posts/${postId}`)
       if (json.success && json.data) {
         setError('')
         setPost(json.data)
@@ -175,12 +172,11 @@ export default function PostDetailPage({ user, onLogout }) {
 
   const handleLike = async () => {
     if (!user) { alert('로그인이 필요합니다.'); goLogin(); return }
-    const token = localStorage.getItem('accessToken')
     if (isLiked) {
-      await fetch(`/posts/${postId}/likes`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+      await apiFetch(`/posts/${postId}/likes`, { method: 'DELETE' })
       setIsLiked(false); setLikeCount(prev => prev - 1)
     } else {
-      await fetch(`/posts/${postId}/likes`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+      await apiFetch(`/posts/${postId}/likes`, { method: 'POST' })
       setIsLiked(true); setLikeCount(prev => prev + 1)
     }
   }
@@ -188,14 +184,11 @@ export default function PostDetailPage({ user, onLogout }) {
   const handleCommentSubmit = async () => {
     if (!commentInput.trim()) return
     if (!user) { alert('로그인이 필요합니다.'); goLogin(); return }
-    const token = localStorage.getItem('accessToken')
-    const res = await fetch(`/posts/${postId}/comments`, {
+    // 작성자는 백엔드가 JWT에서 읽는다. CommentCreateRequest 는 (content, parentId) 뿐이다.
+    const json = await apiFetch(`/posts/${postId}/comments`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      // 작성자는 백엔드가 JWT에서 읽는다. CommentCreateRequest 는 (content, parentId) 뿐이다.
-      body: JSON.stringify({ content: commentInput, parentId: null }),
+      body: { content: commentInput, parentId: null },
     })
-    const json = await readEnvelope(res)
     if (json.success) { setCommentInput(''); fetchPost() }
     else alert(json.message || '댓글 등록에 실패했습니다.')
   }
@@ -203,22 +196,17 @@ export default function PostDetailPage({ user, onLogout }) {
   const handleReplySubmit = async (parentId) => {
     if (!replyInput.trim()) return
     if (!user) { alert('로그인이 필요합니다.'); return }
-    const token = localStorage.getItem('accessToken')
-    const res = await fetch(`/posts/${postId}/comments`, {
+    const json = await apiFetch(`/posts/${postId}/comments`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ content: replyInput, parentId }),
+      body: { content: replyInput, parentId },
     })
-    const json = await readEnvelope(res)
     if (json.success) { setReplyInput(''); setReplyInputId(null); fetchPost() }
     else alert(json.message || '답글 등록에 실패했습니다.')
   }
 
   const handleCommentDelete = async (commentId, mine = true) => {
     if (!window.confirm(deleteConfirmText(mine, '댓글'))) return
-    const token = localStorage.getItem('accessToken')
-    const res = await fetch(`/posts/${postId}/comments/${commentId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
-    const json = await readEnvelope(res)
+    const json = await apiFetch(`/posts/${postId}/comments/${commentId}`, { method: 'DELETE' })
     if (json.success) fetchPost()
     else alert(json.message || '댓글 삭제에 실패했습니다.')
   }
@@ -229,13 +217,10 @@ export default function PostDetailPage({ user, onLogout }) {
   // PUT /posts/{postId}/comments/{commentId} — body: { content }
   const handleCommentEdit = async (commentId) => {
     if (!editingContent.trim()) return
-    const token = localStorage.getItem('accessToken')
-    const res = await fetch(`/posts/${postId}/comments/${commentId}`, {
+    const json = await apiFetch(`/posts/${postId}/comments/${commentId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ content: editingContent }),
+      body: { content: editingContent },
     })
-    const json = await readEnvelope(res)
     if (json.success) { cancelEdit(); fetchPost() }
     else alert(json.message || '댓글 수정에 실패했습니다.')
   }
@@ -243,26 +228,22 @@ export default function PostDetailPage({ user, onLogout }) {
   // DELETE /posts/attachments/{attachmentId} — 게시글 작성자만 노출
   const handleAttachmentDelete = async (attachmentId) => {
     if (!window.confirm('첨부파일을 삭제할까요?')) return
-    const token = localStorage.getItem('accessToken')
-    const res = await fetch(`/posts/attachments/${attachmentId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
-    const json = await readEnvelope(res)
+    const json = await apiFetch(`/posts/attachments/${attachmentId}`, { method: 'DELETE' })
     if (json.success) fetchPost()
     else alert(json.message || '첨부파일 삭제에 실패했습니다.')
   }
 
   const handlePostDelete = async () => {
     if (!window.confirm(deleteConfirmText(isPostOwner, '게시글'))) return
-    const token = localStorage.getItem('accessToken')
-    const res = await fetch(`/posts/${postId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
-    const json = await readEnvelope(res)
+    const json = await apiFetch(`/posts/${postId}`, { method: 'DELETE' })
     if (json.success) navigate('/community')
     else alert(json.message || '게시글 삭제에 실패했습니다.')
   }
 
   const downloadAttachment = async (e, file) => {
     e.preventDefault()
-    const token = localStorage.getItem('accessToken')
-    const res = await fetch(`/posts/attachments/${file.attachmentId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    // 여기만 apiFetch 를 못 쓴다 — 봉투가 아니라 파일 자체(blob)를 받아야 한다.
+    const res = await fetch(`/posts/attachments/${file.attachmentId}`, { headers: authHeaders() })
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

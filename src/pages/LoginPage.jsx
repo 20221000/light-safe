@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import AuthLayout, { AuthLogo, AuthField } from '../components/layout/AuthLayout'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 
 export default function LoginPage({ onLogin, onGoRegister, modal = false, onClose }) {
   const [form, setForm] = useState({ usernameOrEmail: '', password: '' })
@@ -27,12 +27,11 @@ export default function LoginPage({ onLogin, onGoRegister, modal = false, onClos
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/users/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ usernameOrEmail: form.usernameOrEmail, password: form.password }),
+      // auth:false — 로그인 요청에 예전 토큰을 붙일 이유가 없다.
+      const json = await apiFetch('/users/login', {
+        method: 'POST', auth: false,
+        body: { usernameOrEmail: form.usernameOrEmail, password: form.password },
       })
-      const json = await readEnvelope(res)
       if (!json.success || !json.data) {
         setError(json.error?.message || json.message || '로그인에 실패했습니다.')
         return

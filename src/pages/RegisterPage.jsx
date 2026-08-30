@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import AuthLayout, { AuthLogo, AuthField } from '../components/layout/AuthLayout'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 
 const userIcon = <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="3.4" /><path d="M5 20a7 7 0 0 1 14 0" /></svg>
 const tagIcon = <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18" /></svg>
@@ -38,12 +38,10 @@ export default function RegisterPage({ onGoLogin, modal = false, onClose }) {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/users/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: form.username, nickname: form.nickname, email: form.email, password: form.password }),
+      const json = await apiFetch('/users/register', {
+        method: 'POST', auth: false,
+        body: { username: form.username, nickname: form.nickname, email: form.email, password: form.password },
       })
-      const json = await readEnvelope(res)
       if (!json.success) {
         setError(json.error?.message || json.message || '회원가입에 실패했습니다.')
         return

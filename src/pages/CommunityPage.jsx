@@ -6,7 +6,7 @@ import useIsMobile from '../hooks/useIsMobile'
 import useAuthNav from '../hooks/useAuthNav'
 import Icon from '../components/Icon'
 import { POST_CATEGORY } from '../theme/tokens'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 
 // 탭 라벨 → 백엔드 카테고리. '안전 신고'는 커뮤니티 신고글(REPORT), 원클릭 긴급신고와 무관.
 const CATEGORIES = ['전체', '공지', '정보', '질문', '안전 신고', '팁']
@@ -87,10 +87,7 @@ export default function CommunityPage({ user, onLogout }) {
       } else {
         url = `/posts?category=${CATEGORY_MAP[activeCategory]}&page=${currentPage}&size=${pageSize}&sort=${sort}`
       }
-      const token = localStorage.getItem('accessToken')
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
-      const res = await fetch(url, { headers })
-      const json = await readEnvelope(res)
+      const json = await apiFetch(url)
       if (!json.success) { setError(json.message); setPosts([]); setNotices([]); setPageInfo(null); return }
       setError('')
       if (activeCategory === '전체' && !searchKeyword) {
@@ -136,11 +133,9 @@ export default function CommunityPage({ user, onLogout }) {
   useEffect(() => {
     let alive = true
     ;(async () => {
-      const token = localStorage.getItem('accessToken')
-      const headers = token ? { Authorization: `Bearer ${token}` } : {}
       const results = await Promise.all(POPULAR_CATEGORIES.map(async cat => {
         try {
-          const json = await readEnvelope(await fetch(`/posts?category=${cat}&page=0&size=5&sort=${POPULAR_SORT}`, { headers }))
+          const json = await apiFetch(`/posts?category=${cat}&page=0&size=5&sort=${POPULAR_SORT}`)
           return json.success ? { cat, items: json.data?.items ?? [] } : { cat, message: json.message }
         } catch { return { cat, message: '서버에 연결하지 못했습니다.' } }
       }))
@@ -166,9 +161,8 @@ export default function CommunityPage({ user, onLogout }) {
   const handleSearch = () => { setSearchKeyword(searchInput); setCurrentPage(0) }
   const handleCategoryChange = (cat) => { setActiveCategory(cat); setCurrentPage(0); setSearchKeyword(''); setSearchInput('') }
   const handlePostClick = async (postId) => {
-    const token = localStorage.getItem('accessToken')
-    const headers = token ? { Authorization: `Bearer ${token}` } : {}
-    await fetch(`/posts/${postId}/view`, { method: 'POST', headers })
+    // 조회수만 올리는 호출이라 결과를 보지 않는다.
+    await apiFetch(`/posts/${postId}/view`, { method: 'POST' })
     navigate(`/community/${postId}`)
   }
 

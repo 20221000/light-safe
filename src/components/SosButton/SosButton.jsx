@@ -6,7 +6,7 @@ import useIsMobile from '../../hooks/useIsMobile'
 import useAuthNav from '../../hooks/useAuthNav'
 import Icon from '../Icon'
 import ConfirmDialog from '../layout/ConfirmDialog'
-import { readEnvelope } from '../../utils/apiResponse'
+import { apiFetch } from '../../utils/api'
 
 // onReported: 접수가 성공한 직후 부른다. 이 신고 하나로 백엔드가 위험구역을 새로 만들거나
 // (EmergencyReportService.createNewDangerZone) 기존 구역의 등급·신고수를 올리는데, 지도는
@@ -74,14 +74,11 @@ export default function SosButton({ user, onReported }) {
         })
       })
       const { latitude, longitude } = position.coords
-      const token = localStorage.getItem('accessToken')
 
-      const res = await fetch('/emergency-reports', {
+      const json = await apiFetch('/emergency-reports', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ latitude, longitude, description: '긴급 신고' }),
+        body: { latitude, longitude, description: '긴급 신고' },
       })
-      const json = await readEnvelope(res)
 
       if (!json.success) {
         // 실패했으면 다시 누르는 게 유일한 다음 행동이다. 창을 닫고 버튼을 찾아 헤매게 두지 않는다.

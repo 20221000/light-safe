@@ -21,7 +21,7 @@ import useIsMobile from '../hooks/useIsMobile'
 import Icon from '../components/Icon'
 import MiniMap from '../components/MiniMap'
 import LocationText from '../components/LocationText'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 import { notifyNotificationsChanged } from '../hooks/useUnreadNotifications'
 
 const LEVEL_STYLE = {
@@ -95,15 +95,13 @@ export default function NotificationsPage({ user, onLogout }) {
   const [sharedLoading, setSharedLoading] = useState(false)
 
   const token = localStorage.getItem('accessToken')
-  const authHeader = token ? { Authorization: `Bearer ${token}` } : {}
 
   const load = useCallback(async () => {
     if (!user || !token) { setLoading(false); return }
     setLoading(true)
-    const headers = { Authorization: `Bearer ${token}` }
 
     const fetchList = async (url) => {
-      const json = await readEnvelope(await fetch(url, { headers }))
+      const json = await apiFetch(url)
       if (!json.success) { console.warn(`${url} 조회 실패:`, json.message); return [] }
       return Array.isArray(json.data) ? json.data : []
     }
@@ -146,8 +144,7 @@ export default function NotificationsPage({ user, onLogout }) {
   const loadSharedLocation = useCallback(async (reportId) => {
     setShared(null); setSharedError(''); setSharedLoading(true)
     try {
-      const res = await fetch(`/emergency-reports/${reportId}/shared-location`, { headers: authHeader })
-      const json = await readEnvelope(res)
+      const json = await apiFetch(`/emergency-reports/${reportId}/shared-location`)
       if (json.success) setShared(json.data)
       else setSharedError(json.message || '위치를 불러오지 못했습니다.')
     } catch {
@@ -155,9 +152,7 @@ export default function NotificationsPage({ user, onLogout }) {
     } finally {
       setSharedLoading(false)
     }
-    // authHeader 는 렌더마다 새 객체라 의존성에 넣지 않는다(토큰이 실제 입력값이다).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token])
+  }, [])
 
   // 종류마다 읽음 처리 방법이 다르다.
   // 긴급: PATCH /notifications/{id}/read — 알림 1건 = 줄 1개.
@@ -166,7 +161,7 @@ export default function NotificationsPage({ user, onLogout }) {
   //       안 읽은 것을 **전부** 훑어야 벨의 파란 점이 사라진다.
   const markRead = useCallback(async (item) => {
     if (item.isRead) return false
-    const send = (url, method) => fetch(url, { method, headers: authHeader }).then(readEnvelope)
+    const send = (url, method) => apiFetch(url, { method })
     try {
       if (item.kind === 'emergency') {
         const json = await send(`/notifications/${item.raw.notificationId}/read`, 'PATCH')

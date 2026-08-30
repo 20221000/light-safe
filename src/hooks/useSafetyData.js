@@ -1,15 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { readEnvelope } from '../utils/apiResponse'
+import { apiFetch } from '../utils/api'
 
 const fetchDangerZones = async () => {
   try {
-    const token = localStorage.getItem('accessToken')
-    if (!token) return []
+    // 비로그인이면 부르지 않는다 — 401 을 받아 콘솔에 경고만 남길 이유가 없다.
+    if (!localStorage.getItem('accessToken')) return []
 
-    const res = await fetch('/danger-zones', {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-    const json = await readEnvelope(res)
+    const json = await apiFetch('/danger-zones')
     if (!json.success) { console.warn('위험구역 조회 실패:', json.message); return [] }
     return json.data ?? []
   } catch (err) {
